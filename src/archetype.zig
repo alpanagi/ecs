@@ -96,7 +96,7 @@ pub const Archetype = struct {
         components: anytype,
     ) !u32 {
         const entity_index = self.entity_count;
-        const fields = @typeInfo(@TypeOf(components)).@"struct".fields;
+        const fields = std.meta.fields(@TypeOf(components));
 
         if (fields.len != self.component_ids.len) return Error.ComponentMismatch;
 
@@ -217,7 +217,7 @@ pub const RelocatedEntity = struct {
 
 const DeinitFunction = *const fn (ptr: *anyopaque, allocator: std.mem.Allocator) void;
 fn getDeinitFunctionFor(comptime component: type) ?DeinitFunction {
-    if (!@hasDecl(component, "deinit")) return null;
+    if (!std.meta.hasFn(component, "deinit")) return null;
 
     const params = @typeInfo(@TypeOf(component.deinit)).@"fn".params;
 
@@ -381,7 +381,7 @@ test "Archetype.deinit deinits resources owned by stored components" {
             return .{ .buffer = try alloc.alloc(u8, 8) };
         }
 
-        fn deinit(self: *@This(), alloc: std.mem.Allocator) void {
+        pub fn deinit(self: *@This(), alloc: std.mem.Allocator) void {
             alloc.free(self.buffer);
         }
     };
@@ -391,7 +391,7 @@ test "Archetype.deinit deinits resources owned by stored components" {
 
         value: u32,
 
-        fn deinit(self: *@This()) void {
+        pub fn deinit(self: *@This()) void {
             _ = self;
             deinit_calls += 1;
         }
@@ -493,7 +493,7 @@ test "removeEntity deinits resources owned by the removed entity's components" {
             return .{ .buffer = try alloc.alloc(u8, 8) };
         }
 
-        fn deinit(self: *@This(), alloc: std.mem.Allocator) void {
+        pub fn deinit(self: *@This(), alloc: std.mem.Allocator) void {
             alloc.free(self.buffer);
         }
     };
@@ -503,7 +503,7 @@ test "removeEntity deinits resources owned by the removed entity's components" {
 
         value: u32,
 
-        fn deinit(self: *@This()) void {
+        pub fn deinit(self: *@This()) void {
             _ = self;
             deinit_calls += 1;
         }

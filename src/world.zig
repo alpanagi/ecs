@@ -37,10 +37,13 @@ pub const World = struct {
     }
 
     pub fn addEntity(self: *World, allocator: std.mem.Allocator, components: anytype) !Entity {
-        const fields = @typeInfo(@TypeOf(components)).@"struct".fields;
+        const fields = std.meta.fields(@TypeOf(components));
 
-        comptime var component_types: [fields.len]type = undefined;
-        inline for (fields, 0..) |field, idx| component_types[idx] = field.type;
+        const component_types: [fields.len]type = comptime blk: {
+            var types: [fields.len]type = undefined;
+            for (fields, 0..) |field, idx| types[idx] = field.type;
+            break :blk types;
+        };
 
         const archetype_id = try self.findOrCreateArchetype(allocator, &component_types);
         const slot = try self.allocateEntitySlot(allocator);
@@ -333,6 +336,35 @@ test "World.addEntity stores the entity's actual component values" {
     try std.testing.expectEqual(Position{ .x = 5, .y = 6 }, position[0].*);
 }
 
+test "World.addEntity creates an entity from three component types" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+    const Velocity = struct { dx: f32, dy: f32 };
+    const Health = struct { hp: u32 };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    const entity = try world.addEntity(allocator, .{
+        Position{ .x = 1, .y = 2 },
+        Velocity{ .dx = 3, .dy = 4 },
+        Health{ .hp = 100 },
+    });
+
+    const archetype_id = world.entity_archetypes.items[entity.id].?;
+    const archetype_slot = world.entity_archetype_slots.items[entity.id];
+
+    const position, const velocity, const health = try world.archetypes.items[archetype_id].getComponents(
+        archetype_slot,
+        &.{ Position, Velocity, Health },
+    );
+
+    try std.testing.expectEqual(Position{ .x = 1, .y = 2 }, position.*);
+    try std.testing.expectEqual(Velocity{ .dx = 3, .dy = 4 }, velocity.*);
+    try std.testing.expectEqual(Health{ .hp = 100 }, health.*);
+}
+
 test "removeEntity is a no-op for an out-of-range entity index" {
     const allocator = std.testing.allocator;
 
@@ -409,7 +441,7 @@ test "removeEntity deinits resources owned by the removed entity's components" {
             return .{ .buffer = try alloc.alloc(u8, 8) };
         }
 
-        fn deinit(self: *@This(), alloc: std.mem.Allocator) void {
+        pub fn deinit(self: *@This(), alloc: std.mem.Allocator) void {
             alloc.free(self.buffer);
         }
     };
