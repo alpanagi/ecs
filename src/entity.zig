@@ -1,4 +1,4 @@
 pub const Entity = struct {
-    index: u32,
+    id: u32,
     generation: u32,
 };

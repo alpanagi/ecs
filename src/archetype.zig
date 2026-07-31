@@ -1,35 +1,41 @@
 const std = @import("std");
 
 const Error = @import("error.zig").Error;
-
-const hash = @import("hash.zig").hash;
-const sortMultiple = @import("sort.zig").sortMultiple;
 const Entity = @import("entity.zig").Entity;
+const EntityComponents = @import("util.zig").EntityComponents;
+const hash = @import("hash.zig").hash;
 const panic = @import("util.zig").panic;
+const sortMultiple = @import("sort.zig").sortMultiple;
 
 const preallocated_entities_count: usize = 16;
 
 pub const Archetype = struct {
-    entity_count: usize,
+    entity_count: u32,
     entities: []Entity,
 
     component_ids: []const u64,
-    component_sizes: []const usize,
+    component_sizes: []const u32,
     component_deinits: []const ?DeinitFunction,
     data: [][]align(64) u8,
 
-    pub fn init(allocator: std.mem.Allocator, comptime components: []const type, capacity: ?usize) !Archetype {
+    pub fn init(
+        allocator: std.mem.Allocator,
+        comptime components: []const type,
+        capacity: ?usize,
+    ) !Archetype {
         const component_ids = try allocator.alloc(u64, components.len);
         errdefer allocator.free(component_ids);
         inline for (components, 0..) |component, idx| component_ids[idx] = hash(component);
 
-        const component_sizes = try allocator.alloc(usize, components.len);
+        const component_sizes = try allocator.alloc(u32, components.len);
         errdefer allocator.free(component_sizes);
         inline for (components, 0..) |component, idx| component_sizes[idx] = @sizeOf(component);
 
         const component_deinits = try allocator.alloc(?DeinitFunction, components.len);
         errdefer allocator.free(component_deinits);
-        inline for (components, 0..) |component, idx| component_deinits[idx] = getDeinitFunctionFor(component);
+        inline for (components, 0..) |component, idx| {
+            component_deinits[idx] = getDeinitFunctionFor(component);
+        }
 
         // Alignment here to optimize cache reads.
         const data = try allocator.alloc([]align(64) u8, components.len);
@@ -83,7 +89,12 @@ pub const Archetype = struct {
         allocator.free(self.entities);
     }
 
-    pub fn addEntity(self: *Archetype, allocator: std.mem.Allocator, entity: Entity, components: anytype) !usize {
+    pub fn addEntity(
+        self: *Archetype,
+        allocator: std.mem.Allocator,
+        entity: Entity,
+        components: anytype,
+    ) !u32 {
         const entity_index = self.entity_count;
         const fields = @typeInfo(@TypeOf(components)).@"struct".fields;
 
@@ -92,7 +103,9 @@ pub const Archetype = struct {
         if (self.entity_count == self.entities.len) self.grow(allocator);
 
         inline for (fields) |field| {
-            const idx = self.findComponentIndex(hash(field.type)) orelse return Error.UnknownComponent;
+            const idx = self.findComponentIndex(hash(field.type)) orelse {
+                return Error.UnknownComponent;
+            };
 
             const value = @field(components, field.name);
             const size = self.component_sizes[idx];
@@ -109,7 +122,7 @@ pub const Archetype = struct {
 
     pub fn removeEntity(
         self: *Archetype,
-        entity_index: usize,
+        entity_index: u32,
         allocator: std.mem.Allocator,
     ) ?RelocatedEntity {
         if (entity_index >= self.entity_count) return null;
@@ -140,7 +153,7 @@ pub const Archetype = struct {
 
     pub fn getComponents(
         self: *Archetype,
-        entity_index: usize,
+        entity_index: u32,
         comptime components: []const type,
     ) !EntityComponents(components) {
         if (entity_index >= self.entity_count) return Error.InvalidEntityIndex;
@@ -148,7 +161,9 @@ pub const Archetype = struct {
         var result: EntityComponents(components) = undefined;
 
         inline for (components, 0..) |component, idx| {
-            const component_idx = self.findComponentIndex(hash(component)) orelse return Error.UnknownComponent;
+            const component_idx = self.findComponentIndex(hash(component)) orelse {
+                return Error.UnknownComponent;
+            };
 
             const size = self.component_sizes[component_idx];
             result[idx] = @ptrCast(@alignCast(&self.data[component_idx][entity_index * size]));
@@ -157,7 +172,18 @@ pub const Archetype = struct {
         return result;
     }
 
-    pub fn ensureTotalCapacity(self: *Archetype, allocator: std.mem.Allocator, capacity: usize) void {
+    pub fn hasComponents(self: *const Archetype, comptime components: []const type) bool {
+        inline for (components) |component| {
+            if (self.findComponentIndex(hash(component)) == null) return false;
+        }
+        return true;
+    }
+
+    pub fn ensureTotalCapacity(
+        self: *Archetype,
+        allocator: std.mem.Allocator,
+        capacity: usize,
+    ) void {
         if (capacity > self.entities.len) self.growTo(allocator, capacity);
     }
 
@@ -186,14 +212,8 @@ pub const Archetype = struct {
 
 pub const RelocatedEntity = struct {
     entity: Entity,
-    entity_index: usize,
+    entity_index: u32,
 };
-
-fn EntityComponents(comptime components: []const type) type {
-    comptime var pointer_types: [components.len]type = undefined;
-    inline for (components, 0..) |component, idx| pointer_types[idx] = *component;
-    return @Tuple(&pointer_types);
-}
 
 const DeinitFunction = *const fn (ptr: *anyopaque, allocator: std.mem.Allocator) void;
 fn getDeinitFunctionFor(comptime component: type) ?DeinitFunction {
@@ -228,16 +248,16 @@ test "Archetype sorts the components on initialization" {
     };
 
     const expected_ids: []const u64 = &.{ 9047713391308399252, 15171739973735874036 }; //Value, Type
-    const expected_sizes: []const usize = &.{ @sizeOf(u64), @sizeOf(Type) };
+    const expected_sizes: []const u32 = &.{ @sizeOf(u64), @sizeOf(Type) };
 
     var archetype = try Archetype.init(allocator, &[_]type{ Value, Type }, null);
     try std.testing.expectEqualSlices(u64, expected_ids, archetype.component_ids);
-    try std.testing.expectEqualSlices(usize, expected_sizes, archetype.component_sizes);
+    try std.testing.expectEqualSlices(u32, expected_sizes, archetype.component_sizes);
     archetype.deinit(allocator);
 
     archetype = try Archetype.init(allocator, &[_]type{ Type, Value }, null);
     try std.testing.expectEqualSlices(u64, expected_ids, archetype.component_ids);
-    try std.testing.expectEqualSlices(usize, expected_sizes, archetype.component_sizes);
+    try std.testing.expectEqualSlices(u32, expected_sizes, archetype.component_sizes);
     archetype.deinit(allocator);
 }
 
@@ -285,7 +305,11 @@ test "Can add entities to archetype" {
     const type_ = Type{ .data = 112 };
     const value_ = Value{ .value = 74 };
 
-    const entity_index = try archetype.addEntity(allocator, .{ .index = 0, .generation = 0 }, .{ type_, value_ });
+    const entity_index = try archetype.addEntity(
+        allocator,
+        .{ .id = 0, .generation = 0 },
+        .{ type_, value_ },
+    );
 
     const type_idx = std.mem.indexOfScalar(u64, archetype.component_ids, hash(Type)).?;
     const value_idx = std.mem.indexOfScalar(u64, archetype.component_ids, hash(Value)).?;
@@ -310,7 +334,7 @@ test "addEntity returns Error.ComponentMismatch when the wrong number of compone
 
     try std.testing.expectError(
         Error.ComponentMismatch,
-        archetype.addEntity(allocator, .{ .index = 0, .generation = 0 }, .{Type{ .data = 1 }}),
+        archetype.addEntity(allocator, .{ .id = 0, .generation = 0 }, .{Type{ .data = 1 }}),
     );
 }
 
@@ -325,7 +349,7 @@ test "addEntity returns Error.UnknownComponent when a passed component type is n
 
     try std.testing.expectError(
         Error.UnknownComponent,
-        archetype.addEntity(allocator, .{ .index = 0, .generation = 0 }, .{Value{ .value = 1 }}),
+        archetype.addEntity(allocator, .{ .id = 0, .generation = 0 }, .{Value{ .value = 1 }}),
     );
 }
 
@@ -337,8 +361,8 @@ test "Archetype stores the entity passed to addEntity" {
     var archetype = try Archetype.init(allocator, &.{Value}, null);
     defer archetype.deinit(allocator);
 
-    const first = Entity{ .index = 3, .generation = 1 };
-    const second = Entity{ .index = 7, .generation = 2 };
+    const first = Entity{ .id = 3, .generation = 1 };
+    const second = Entity{ .id = 7, .generation = 2 };
 
     const first_index = try archetype.addEntity(allocator, first, .{Value{ .value = 1 }});
     const second_index = try archetype.addEntity(allocator, second, .{Value{ .value = 2 }});
@@ -377,7 +401,11 @@ test "Archetype.deinit deinits resources owned by stored components" {
 
     const owning = try OwningComponent.init(allocator);
     const non_owning = NonOwningComponent{ .value = 1 };
-    _ = try archetype.addEntity(allocator, .{ .index = 0, .generation = 0 }, .{ owning, non_owning });
+    _ = try archetype.addEntity(
+        allocator,
+        .{ .id = 0, .generation = 0 },
+        .{ owning, non_owning },
+    );
 
     archetype.deinit(allocator);
 
@@ -392,8 +420,8 @@ test "removeEntity returns null and does not relocate anything when removing the
     var archetype = try Archetype.init(allocator, &.{Value}, null);
     defer archetype.deinit(allocator);
 
-    const first = Entity{ .index = 1, .generation = 0 };
-    const second = Entity{ .index = 2, .generation = 0 };
+    const first = Entity{ .id = 1, .generation = 0 };
+    const second = Entity{ .id = 2, .generation = 0 };
 
     const first_index = try archetype.addEntity(allocator, first, .{Value{ .value = 10 }});
     const second_index = try archetype.addEntity(allocator, second, .{Value{ .value = 20 }});
@@ -419,7 +447,11 @@ test "removeEntity is a no-op when entity_index is out of bounds" {
     try std.testing.expectEqual(null, archetype.removeEntity(0, allocator));
     try std.testing.expectEqual(0, archetype.entity_count);
 
-    _ = try archetype.addEntity(allocator, .{ .index = 0, .generation = 0 }, .{Value{ .value = 1 }});
+    _ = try archetype.addEntity(
+        allocator,
+        .{ .id = 0, .generation = 0 },
+        .{Value{ .value = 1 }},
+    );
 
     try std.testing.expectEqual(null, archetype.removeEntity(1, allocator));
     try std.testing.expectEqual(1, archetype.entity_count);
@@ -433,9 +465,9 @@ test "removeEntity swaps the last entity into the removed slot and returns it as
     var archetype = try Archetype.init(allocator, &.{Value}, null);
     defer archetype.deinit(allocator);
 
-    const first = Entity{ .index = 1, .generation = 0 };
-    const second = Entity{ .index = 2, .generation = 0 };
-    const third = Entity{ .index = 3, .generation = 0 };
+    const first = Entity{ .id = 1, .generation = 0 };
+    const second = Entity{ .id = 2, .generation = 0 };
+    const third = Entity{ .id = 3, .generation = 0 };
 
     _ = try archetype.addEntity(allocator, first, .{Value{ .value = 10 }});
     _ = try archetype.addEntity(allocator, second, .{Value{ .value = 20 }});
@@ -482,7 +514,11 @@ test "removeEntity deinits resources owned by the removed entity's components" {
 
     const owning = try OwningComponent.init(allocator);
     const non_owning = NonOwningComponent{ .value = 1 };
-    const entity_index = try archetype.addEntity(allocator, .{ .index = 0, .generation = 0 }, .{ owning, non_owning });
+    const entity_index = try archetype.addEntity(
+        allocator,
+        .{ .id = 0, .generation = 0 },
+        .{ owning, non_owning },
+    );
 
     _ = archetype.removeEntity(entity_index, allocator);
 
@@ -501,7 +537,7 @@ test "Archetype grows its arrays when it runs out of capacity" {
     const count = preallocated_entities_count + 1;
 
     for (0..count) |index| {
-        const entity = Entity{ .index = @intCast(index), .generation = 0 };
+        const entity = Entity{ .id = @intCast(index), .generation = 0 };
         _ = try archetype.addEntity(allocator, entity, .{Value{ .value = @intCast(index) }});
     }
 
@@ -512,7 +548,7 @@ test "Archetype grows its arrays when it runs out of capacity" {
     const values = @as([*]Value, @ptrCast(@alignCast(archetype.data[0].ptr)))[0..count];
     for (values, 0..) |value, index| {
         try std.testing.expectEqual(@as(u64, @intCast(index)), value.value);
-        try std.testing.expectEqual(@as(u32, @intCast(index)), archetype.entities[index].index);
+        try std.testing.expectEqual(@as(u32, @intCast(index)), archetype.entities[index].id);
     }
 }
 
@@ -527,11 +563,14 @@ test "getComponents returns pointers to an entity's requested components" {
 
     const entity_index = try archetype.addEntity(
         allocator,
-        .{ .index = 0, .generation = 0 },
+        .{ .id = 0, .generation = 0 },
         .{ Position{ .x = 1, .y = 2 }, Velocity{ .dx = 3, .dy = 4 } },
     );
 
-    const position, const velocity = try archetype.getComponents(entity_index, &.{ Position, Velocity });
+    const position, const velocity = try archetype.getComponents(
+        entity_index,
+        &.{ Position, Velocity },
+    );
 
     try std.testing.expectEqual(Position{ .x = 1, .y = 2 }, position.*);
     try std.testing.expectEqual(Velocity{ .dx = 3, .dy = 4 }, velocity.*);
@@ -553,11 +592,14 @@ test "getComponents returns Error.UnknownComponent for a type the archetype does
 
     const entity_index = try archetype.addEntity(
         allocator,
-        .{ .index = 0, .generation = 0 },
+        .{ .id = 0, .generation = 0 },
         .{Position{ .x = 1, .y = 2 }},
     );
 
-    try std.testing.expectError(Error.UnknownComponent, archetype.getComponents(entity_index, &.{Velocity}));
+    try std.testing.expectError(
+        Error.UnknownComponent,
+        archetype.getComponents(entity_index, &.{Velocity}),
+    );
 }
 
 test "getComponents returns Error.InvalidEntityIndex when entity_index is out of bounds" {
@@ -572,7 +614,7 @@ test "getComponents returns Error.InvalidEntityIndex when entity_index is out of
 
     _ = try archetype.addEntity(
         allocator,
-        .{ .index = 0, .generation = 0 },
+        .{ .id = 0, .generation = 0 },
         .{Position{ .x = 1, .y = 2 }},
     );
 
@@ -590,27 +632,70 @@ test "getComponents returns the correct entity's data when entity_index is not z
 
     _ = try archetype.addEntity(
         allocator,
-        .{ .index = 0, .generation = 0 },
+        .{ .id = 0, .generation = 0 },
         .{ Position{ .x = 1, .y = 1 }, Velocity{ .dx = 1, .dy = 1 } },
     );
     const second_index = try archetype.addEntity(
         allocator,
-        .{ .index = 1, .generation = 0 },
+        .{ .id = 1, .generation = 0 },
         .{ Position{ .x = 2, .y = 2 }, Velocity{ .dx = 2, .dy = 2 } },
     );
     const third_index = try archetype.addEntity(
         allocator,
-        .{ .index = 2, .generation = 0 },
+        .{ .id = 2, .generation = 0 },
         .{ Position{ .x = 3, .y = 3 }, Velocity{ .dx = 3, .dy = 3 } },
     );
 
-    const second_position, const second_velocity = try archetype.getComponents(second_index, &.{ Position, Velocity });
+    const second_position, const second_velocity = try archetype.getComponents(
+        second_index,
+        &.{ Position, Velocity },
+    );
     try std.testing.expectEqual(Position{ .x = 2, .y = 2 }, second_position.*);
     try std.testing.expectEqual(Velocity{ .dx = 2, .dy = 2 }, second_velocity.*);
 
-    const third_position, const third_velocity = try archetype.getComponents(third_index, &.{ Position, Velocity });
+    const third_position, const third_velocity = try archetype.getComponents(
+        third_index,
+        &.{ Position, Velocity },
+    );
     try std.testing.expectEqual(Position{ .x = 3, .y = 3 }, third_position.*);
     try std.testing.expectEqual(Velocity{ .dx = 3, .dy = 3 }, third_velocity.*);
+}
+
+test "hasComponents returns true when the archetype has every requested component" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+    const Velocity = struct { dx: f32, dy: f32 };
+
+    var archetype = try Archetype.init(allocator, &.{ Position, Velocity }, null);
+    defer archetype.deinit(allocator);
+
+    try std.testing.expect(archetype.hasComponents(&.{ Position, Velocity }));
+}
+
+test "hasComponents returns true for a subset of the archetype's components" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+    const Velocity = struct { dx: f32, dy: f32 };
+    const Health = struct { value: u32 };
+
+    var archetype = try Archetype.init(allocator, &.{ Position, Velocity, Health }, null);
+    defer archetype.deinit(allocator);
+
+    try std.testing.expect(archetype.hasComponents(&.{Position}));
+}
+
+test "hasComponents returns false when a requested component is missing" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+    const Velocity = struct { dx: f32, dy: f32 };
+
+    var archetype = try Archetype.init(allocator, &.{Position}, null);
+    defer archetype.deinit(allocator);
+
+    try std.testing.expect(!archetype.hasComponents(&.{ Position, Velocity }));
 }
 
 test "Archetype.init reserves capacity up front when given one" {

@@ -1,7 +1,7 @@
 const std = @import("std");
 
 pub fn sortMultiple(keys: anytype, others: anytype) void {
-    const KeyType = @typeInfo(@TypeOf(keys)).pointer.child;
+    const KeyType = std.meta.Child(@TypeOf(keys));
 
     const SortContext = struct {
         keys: @TypeOf(keys),
@@ -14,7 +14,7 @@ pub fn sortMultiple(keys: anytype, others: anytype) void {
         pub fn swap(self: @This(), a: usize, b: usize) void {
             std.mem.swap(KeyType, &self.keys[a], &self.keys[b]);
             inline for (self.others) |other| {
-                std.mem.swap(@TypeOf(other[0]), &other[a], &other[b]);
+                std.mem.swap(std.meta.Child(@TypeOf(other)), &other[a], &other[b]);
             }
         }
     };

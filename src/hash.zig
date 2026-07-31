@@ -6,8 +6,8 @@ pub fn hash(comptime T: type) u64 {
     return std.hash.Wyhash.hash(seed, @typeName(T));
 }
 
-test "Returns correct hash for type" {
+test "hash uses Wyhash" {
     const Type = struct { data: u64 };
 
-    try std.testing.expectEqual(87714741122478790, hash(Type));
+    try std.testing.expectEqual(1622734371899143350, hash(Type));
 }
