@@ -95,8 +95,8 @@ pub const World = struct {
         try self.entity_free_list.append(allocator, entity.id);
     }
 
-    pub fn query(self: *World, comptime components: []const type) Query(components) {
-        return .{ .world = self };
+    pub fn query(_: *World, comptime components: []const type) Query(components) {
+        return .{};
     }
 
     pub fn addSystem(
@@ -157,13 +157,12 @@ pub const World = struct {
 
 pub fn Query(comptime components: []const type) type {
     return struct {
-        world: *World,
         archetype_cursor: usize = 0,
         entity_cursor: u32 = 0,
 
-        pub fn next(self: *@This()) ?EntityComponents(components) {
-            while (self.archetype_cursor < self.world.archetypes.items.len) {
-                const archetype = &self.world.archetypes.items[self.archetype_cursor];
+        pub fn next(self: *@This(), world: *World) ?EntityComponents(components) {
+            while (self.archetype_cursor < world.archetypes.items.len) {
+                const archetype = &world.archetypes.items[self.archetype_cursor];
 
                 if (self.entity_cursor == 0 and !archetype.hasComponents(components)) {
                     self.archetype_cursor += 1;
@@ -518,7 +517,7 @@ test "query yields components for every entity across all matching archetypes" {
     var sum_x: f32 = 0;
 
     var query = world.query(&.{Position});
-    while (query.next()) |result| {
+    while (query.next(&world)) |result| {
         count += 1;
         sum_x += result[0].x;
     }
@@ -539,7 +538,7 @@ test "query returns null immediately when no archetypes match" {
     _ = try world.addEntity(allocator, .{Velocity{ .dx = 1, .dy = 1 }});
 
     var query = world.query(&.{Position});
-    try std.testing.expectEqual(null, query.next());
+    try std.testing.expectEqual(null, query.next(&world));
 }
 
 test "query skips entities in archetypes that don't have the requested components" {
@@ -556,7 +555,7 @@ test "query skips entities in archetypes that don't have the requested component
 
     var count: usize = 0;
     var query = world.query(&.{Position});
-    while (query.next()) |result| {
+    while (query.next(&world)) |result| {
         count += 1;
         try std.testing.expectEqual(@as(f32, 5), result[0].x);
     }
