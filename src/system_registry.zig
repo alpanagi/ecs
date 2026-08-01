@@ -42,6 +42,7 @@ pub const ObserverEntry = union(enum) {
 pub const SystemRegistry = struct {
     groups: std.AutoArrayHashMapUnmanaged(u64, std.ArrayList(SystemEntry)) = .{},
     observers: std.AutoArrayHashMapUnmanaged(u64, std.ArrayList(ObserverEntry)) = .{},
+    one_shot_systems: std.ArrayList(SystemEntry) = .empty,
 
     pub fn init() SystemRegistry {
         return .{};
@@ -52,6 +53,7 @@ pub const SystemRegistry = struct {
         self.groups.deinit(allocator);
         for (self.observers.values()) |*group| group.deinit(allocator);
         self.observers.deinit(allocator);
+        self.one_shot_systems.deinit(allocator);
     }
 
     pub fn registerSystem(
@@ -61,28 +63,27 @@ pub const SystemRegistry = struct {
         comptime function: anytype,
         plugin: anytype,
     ) !void {
-        var entry: SystemEntry = undefined;
-        if (comptime @TypeOf(plugin) == @TypeOf(null)) {
-            const info = functionInfo(@TypeOf(function));
-            if (info.params.len != 2 or
-                info.params[0].type.? != *World or
-                info.params[1].type.? != *const std.mem.Allocator or
-                info.return_type.? != void)
-            {
-                @compileError("a system without a plugin must have signature fn (*World, *const std.mem.Allocator) void");
-            }
-            const system_function: SystemFunction = function;
-            entry = .{ .function = system_function };
-        } else {
-            const Plugin = pluginType(@TypeOf(plugin));
-            validatePluginFunction(Plugin, @TypeOf(function));
-            const typed_plugin: *Plugin = plugin;
-            entry = .{ .plugin_function = .{
-                .plugin = typed_plugin,
-                .function = pluginInvoker(Plugin, function),
-            } };
-        }
+        const entry = buildSystemEntry(function, plugin);
         try appendEntry(SystemEntry, &self.groups, allocator, group, entry);
+    }
+
+    pub fn registerOneShotSystem(
+        self: *SystemRegistry,
+        allocator: std.mem.Allocator,
+        comptime function: anytype,
+        plugin: anytype,
+    ) !void {
+        const entry = buildSystemEntry(function, plugin);
+        try self.one_shot_systems.append(allocator, entry);
+    }
+
+    pub fn runSystems(self: *SystemRegistry, allocator: std.mem.Allocator, world: *World) void {
+        for (self.one_shot_systems.items) |entry| entry.run(allocator, world);
+        self.one_shot_systems.clearRetainingCapacity();
+
+        for (self.groups.values()) |group| {
+            for (group.items) |entry| entry.run(allocator, world);
+        }
     }
 
     pub fn registerObserver(
@@ -160,6 +161,29 @@ fn appendEntry(
     };
 }
 
+fn buildSystemEntry(comptime function: anytype, plugin: anytype) SystemEntry {
+    if (comptime @TypeOf(plugin) == @TypeOf(null)) {
+        const info = functionInfo(@TypeOf(function));
+        if (info.params.len != 2 or
+            info.params[0].type.? != *World or
+            info.params[1].type.? != *const std.mem.Allocator or
+            info.return_type.? != void)
+        {
+            @compileError("a system without a plugin must have signature fn (*World, *const std.mem.Allocator) void");
+        }
+        const system_function: SystemFunction = function;
+        return .{ .function = system_function };
+    } else {
+        const Plugin = pluginType(@TypeOf(plugin));
+        validatePluginFunction(Plugin, @TypeOf(function));
+        const typed_plugin: *Plugin = plugin;
+        return .{ .plugin_function = .{
+            .plugin = typed_plugin,
+            .function = pluginInvoker(Plugin, function),
+        } };
+    }
+}
+
 fn pluginType(comptime Pointer: type) type {
     const pointer = switch (@typeInfo(Pointer)) {
         .pointer => |info| info,
@@ -233,26 +257,6 @@ fn observerInvoker(comptime EventType: type, comptime function: anytype) Observe
     }.call;
 }
 
-pub const SystemIterator = struct {
-    group_index: usize = 0,
-    system_index: usize = 0,
-
-    pub fn next(self: *SystemIterator, world: *World) ?SystemEntry {
-        const groups = world.system_registry.groups.values();
-        while (self.group_index < groups.len) {
-            const group = groups[self.group_index];
-            if (self.system_index < group.items.len) {
-                const entry = group.items[self.system_index];
-                self.system_index += 1;
-                return entry;
-            }
-            self.group_index += 1;
-            self.system_index = 0;
-        }
-        return null;
-    }
-};
-
 test "registerSystem creates a group on first use" {
     const system = struct {
         fn call(_: *World, _: *const std.mem.Allocator) callconv(.c) void {}
@@ -289,9 +293,7 @@ test "registerSystem appends to an existing group in call order" {
     try world.system_registry.registerSystem(std.testing.allocator, 1, a, null);
     try world.system_registry.registerSystem(std.testing.allocator, 1, b, null);
 
-    var iterator = SystemIterator{};
-    iterator.next(&world).?.run(std.testing.allocator, &world);
-    iterator.next(&world).?.run(std.testing.allocator, &world);
+    world.system_registry.runSystems(std.testing.allocator, &world);
     try std.testing.expectEqualSlices(u8, &.{ 1, 2 }, &State.calls);
 }
 
@@ -309,8 +311,7 @@ test "registerSystem binds the plugin pointer when provided" {
     var plugin = Plugin{};
     try world.system_registry.registerSystem(std.testing.allocator, 1, Plugin.update, &plugin);
 
-    var iterator = SystemIterator{};
-    iterator.next(&world).?.run(std.testing.allocator, &world);
+    world.system_registry.runSystems(std.testing.allocator, &world);
     try std.testing.expectEqual(1, plugin.calls);
 }
 
@@ -331,7 +332,7 @@ test "registerSystem preserves group order by first registration" {
     try std.testing.expectEqualSlices(u64, &.{ 2, 1 }, registry.groups.keys());
 }
 
-test "iterator yields systems group by group, in registration order" {
+test "runSystems runs systems group by group, in registration order" {
     const State = struct {
         var calls: [3]u8 = undefined;
         var count: usize = 0;
@@ -361,16 +362,14 @@ test "iterator yields systems group by group, in registration order" {
     try world.system_registry.registerSystem(std.testing.allocator, 1, b, null);
     try world.system_registry.registerSystem(std.testing.allocator, 2, c, null);
 
-    var iterator = SystemIterator{};
-    while (iterator.next(&world)) |entry| entry.run(std.testing.allocator, &world);
+    world.system_registry.runSystems(std.testing.allocator, &world);
     try std.testing.expectEqualSlices(u8, &.{ 1, 3, 2 }, &State.calls);
 }
 
-test "iterator returns null immediately when nothing is registered" {
+test "runSystems is a no-op when nothing is registered" {
     var world = World.init();
     defer world.deinit(std.testing.allocator);
-    var iterator = SystemIterator{};
-    try std.testing.expectEqual(null, iterator.next(&world));
+    world.system_registry.runSystems(std.testing.allocator, &world);
 }
 
 test "dispatch runs a registered observer with the triggered event's data" {
@@ -472,4 +471,84 @@ test "dispatch is a no-op when nothing is registered for the event" {
     defer world.deinit(std.testing.allocator);
 
     world.system_registry.dispatch(std.testing.allocator, hash(Damage), &world, &Damage{ .amount = 1 });
+}
+
+test "registerOneShotSystem appends to one_shot_systems" {
+    const system = struct {
+        fn call(_: *World, _: *const std.mem.Allocator) callconv(.c) void {}
+    }.call;
+
+    var world = World.init();
+    defer world.deinit(std.testing.allocator);
+    try world.system_registry.registerOneShotSystem(std.testing.allocator, system, null);
+
+    try std.testing.expectEqual(1, world.system_registry.one_shot_systems.items.len);
+}
+
+test "runSystems runs registered one-shot systems in registration order" {
+    const State = struct {
+        var calls: [2]u8 = undefined;
+        var count: usize = 0;
+    };
+    const a = struct {
+        fn call(_: *World, _: *const std.mem.Allocator) callconv(.c) void {
+            State.calls[State.count] = 1;
+            State.count += 1;
+        }
+    }.call;
+    const b = struct {
+        fn call(_: *World, _: *const std.mem.Allocator) callconv(.c) void {
+            State.calls[State.count] = 2;
+            State.count += 1;
+        }
+    }.call;
+
+    var world = World.init();
+    defer world.deinit(std.testing.allocator);
+    try world.system_registry.registerOneShotSystem(std.testing.allocator, a, null);
+    try world.system_registry.registerOneShotSystem(std.testing.allocator, b, null);
+
+    world.system_registry.runSystems(std.testing.allocator, &world);
+
+    try std.testing.expectEqualSlices(u8, &.{ 1, 2 }, &State.calls);
+}
+
+test "runSystems binds the plugin pointer for a one-shot system when provided" {
+    const Plugin = struct {
+        calls: usize = 0,
+
+        fn tick(self: *@This(), _: *const std.mem.Allocator, _: *World) void {
+            self.calls += 1;
+        }
+    };
+
+    var world = World.init();
+    defer world.deinit(std.testing.allocator);
+    var plugin = Plugin{};
+    try world.system_registry.registerOneShotSystem(std.testing.allocator, Plugin.tick, &plugin);
+
+    world.system_registry.runSystems(std.testing.allocator, &world);
+
+    try std.testing.expectEqual(1, plugin.calls);
+}
+
+test "runSystems clears one-shot systems so they do not run again" {
+    const State = struct {
+        var calls: usize = 0;
+    };
+    const system = struct {
+        fn call(_: *World, _: *const std.mem.Allocator) callconv(.c) void {
+            State.calls += 1;
+        }
+    }.call;
+
+    var world = World.init();
+    defer world.deinit(std.testing.allocator);
+    try world.system_registry.registerOneShotSystem(std.testing.allocator, system, null);
+
+    world.system_registry.runSystems(std.testing.allocator, &world);
+    world.system_registry.runSystems(std.testing.allocator, &world);
+
+    try std.testing.expectEqual(1, State.calls);
+    try std.testing.expectEqual(0, world.system_registry.one_shot_systems.items.len);
 }

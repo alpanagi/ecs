@@ -9,7 +9,6 @@ const panic = @import("util.zig").panic;
 const EntityComponents = @import("util.zig").EntityComponents;
 const PluginRegistry = @import("plugin_registry.zig").PluginRegistry;
 const SystemRegistry = @import("system_registry.zig").SystemRegistry;
-const SystemIterator = @import("system_registry.zig").SystemIterator;
 const SystemEntry = @import("system_registry.zig").SystemEntry;
 
 pub const World = struct {
@@ -109,8 +108,17 @@ pub const World = struct {
         try self.system_registry.registerSystem(allocator, hashBytes(group), function, plugin);
     }
 
-    pub fn iterateSystems(_: *World) SystemIterator {
-        return .{};
+    pub fn runSystems(self: *World, allocator: std.mem.Allocator) void {
+        self.system_registry.runSystems(allocator, self);
+    }
+
+    pub fn addOneShotSystem(
+        self: *World,
+        allocator: std.mem.Allocator,
+        comptime function: anytype,
+        plugin: anytype,
+    ) !void {
+        try self.system_registry.registerOneShotSystem(allocator, function, plugin);
     }
 
     pub fn addObserver(
@@ -576,7 +584,7 @@ test "query skips entities in archetypes that don't have the requested component
     try std.testing.expectEqual(1, count);
 }
 
-test "addSystem then iterateSystems yields the system" {
+test "addSystem then runSystems runs the system" {
     const State = struct {
         var called = false;
     };
@@ -591,10 +599,8 @@ test "addSystem then iterateSystems yields the system" {
 
     try world.addSystem(std.testing.allocator, "physics", system, null);
 
-    var it = world.iterateSystems();
-    it.next(&world).?.run(std.testing.allocator, &world);
+    world.runSystems(std.testing.allocator);
     try std.testing.expect(State.called);
-    try std.testing.expectEqual(null, it.next(&world));
 }
 
 test "addSystem groups systems by the same group name in call order" {
@@ -621,11 +627,8 @@ test "addSystem groups systems by the same group name in call order" {
     try world.addSystem(std.testing.allocator, "physics", a, null);
     try world.addSystem(std.testing.allocator, "physics", b, null);
 
-    var it = world.iterateSystems();
-    it.next(&world).?.run(std.testing.allocator, &world);
-    it.next(&world).?.run(std.testing.allocator, &world);
+    world.runSystems(std.testing.allocator);
     try std.testing.expectEqualSlices(u8, &.{ 1, 2 }, &State.calls);
-    try std.testing.expectEqual(null, it.next(&world));
 }
 
 test "addPlugin runs the plugin's init immediately" {
@@ -671,13 +674,10 @@ test "a plugin's build can register systems" {
 
     try world.addPlugin(std.testing.allocator, Plugin);
 
-    var it = world.iterateSystems();
-    const entry: SystemEntry = it.next(&world).?;
-    entry.run(std.testing.allocator, &world);
-    const plugin_system = entry.plugin_function;
-    const plugin: *Plugin = @ptrCast(@alignCast(plugin_system.plugin));
+    world.runSystems(std.testing.allocator);
+    const entry: SystemEntry = world.system_registry.groups.values()[0].items[0];
+    const plugin: *Plugin = @ptrCast(@alignCast(entry.plugin_function.plugin));
     try std.testing.expectEqual(1, plugin.calls);
-    try std.testing.expectEqual(null, it.next(&world));
 }
 
 test "deinit calls a plugin's deinit" {
@@ -725,10 +725,8 @@ test "plugin systems share state across runs" {
     defer world.deinit(std.testing.allocator);
     try world.addPlugin(std.testing.allocator, Plugin);
 
-    var first = world.iterateSystems();
-    while (first.next(&world)) |entry| entry.run(std.testing.allocator, &world);
-    var second = world.iterateSystems();
-    while (second.next(&world)) |entry| entry.run(std.testing.allocator, &world);
+    world.runSystems(std.testing.allocator);
+    world.runSystems(std.testing.allocator);
 
     const first_entry = world.system_registry.groups.values()[0].items[0].plugin_function;
     const plugin: *Plugin = @ptrCast(@alignCast(first_entry.plugin));
@@ -762,9 +760,8 @@ test "systems registered before a plugin build failure remain valid" {
         error.Boom,
         world.addPlugin(std.testing.allocator, Plugin),
     );
-    var iterator = world.iterateSystems();
-    const entry = iterator.next(&world).?;
-    entry.run(std.testing.allocator, &world);
+    world.runSystems(std.testing.allocator);
+    const entry = world.system_registry.groups.values()[0].items[0];
     const plugin: *Plugin = @ptrCast(@alignCast(entry.plugin_function.plugin));
     try std.testing.expectEqual(1, plugin.calls);
 }
@@ -812,4 +809,47 @@ test "a plugin's build can register an observer through World.addObserver" {
     const entry = world.system_registry.observers.values()[0].items[0];
     const plugin: *Plugin = @ptrCast(@alignCast(entry.plugin_function.plugin));
     try std.testing.expectEqual(5, plugin.total);
+}
+
+test "World.runSystems runs a one-shot system registered through World.addOneShotSystem, once" {
+    const State = struct {
+        var calls: usize = 0;
+    };
+    const system = struct {
+        fn call(_: *World, _: *const std.mem.Allocator) callconv(.c) void {
+            State.calls += 1;
+        }
+    }.call;
+
+    var world = World.init();
+    defer world.deinit(std.testing.allocator);
+
+    try world.addOneShotSystem(std.testing.allocator, system, null);
+    world.runSystems(std.testing.allocator);
+    world.runSystems(std.testing.allocator);
+
+    try std.testing.expectEqual(1, State.calls);
+}
+
+test "a plugin's build can register a one-shot system through World.addOneShotSystem" {
+    const Plugin = struct {
+        calls: usize = 0,
+
+        pub fn build(self: *@This(), allocator: std.mem.Allocator, world: *World) !void {
+            try world.addOneShotSystem(allocator, tick, self);
+        }
+
+        fn tick(self: *@This(), _: *const std.mem.Allocator, _: *World) void {
+            self.calls += 1;
+        }
+    };
+
+    var world = World.init();
+    defer world.deinit(std.testing.allocator);
+
+    try world.addPlugin(std.testing.allocator, Plugin);
+    world.runSystems(std.testing.allocator);
+
+    const plugin: *Plugin = @ptrCast(@alignCast(world.plugin_registry.plugins.items[0].plugin));
+    try std.testing.expectEqual(1, plugin.calls);
 }
