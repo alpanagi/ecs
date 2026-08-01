@@ -122,8 +122,8 @@ pub const World = struct {
         try self.system_registry.registerObserver(allocator, function, plugin);
     }
 
-    pub fn trigger(self: *World, event: anytype) void {
-        self.system_registry.dispatch(hash(@TypeOf(event)), self, &event);
+    pub fn trigger(self: *World, allocator: std.mem.Allocator, event: anytype) void {
+        self.system_registry.dispatch(allocator, hash(@TypeOf(event)), self, &event);
     }
 
     pub fn addPlugin(self: *World, allocator: std.mem.Allocator, comptime T: type) !void {
@@ -581,7 +581,7 @@ test "addSystem then iterateSystems yields the system" {
         var called = false;
     };
     const system = struct {
-        fn call(_: *World) callconv(.c) void {
+        fn call(_: *World, _: *const std.mem.Allocator) callconv(.c) void {
             State.called = true;
         }
     }.call;
@@ -592,7 +592,7 @@ test "addSystem then iterateSystems yields the system" {
     try world.addSystem(std.testing.allocator, "physics", system, null);
 
     var it = world.iterateSystems();
-    it.next(&world).?.run(&world);
+    it.next(&world).?.run(std.testing.allocator, &world);
     try std.testing.expect(State.called);
     try std.testing.expectEqual(null, it.next(&world));
 }
@@ -603,13 +603,13 @@ test "addSystem groups systems by the same group name in call order" {
         var count: usize = 0;
     };
     const a = struct {
-        fn call(_: *World) callconv(.c) void {
+        fn call(_: *World, _: *const std.mem.Allocator) callconv(.c) void {
             State.calls[State.count] = 1;
             State.count += 1;
         }
     }.call;
     const b = struct {
-        fn call(_: *World) callconv(.c) void {
+        fn call(_: *World, _: *const std.mem.Allocator) callconv(.c) void {
             State.calls[State.count] = 2;
             State.count += 1;
         }
@@ -622,8 +622,8 @@ test "addSystem groups systems by the same group name in call order" {
     try world.addSystem(std.testing.allocator, "physics", b, null);
 
     var it = world.iterateSystems();
-    it.next(&world).?.run(&world);
-    it.next(&world).?.run(&world);
+    it.next(&world).?.run(std.testing.allocator, &world);
+    it.next(&world).?.run(std.testing.allocator, &world);
     try std.testing.expectEqualSlices(u8, &.{ 1, 2 }, &State.calls);
     try std.testing.expectEqual(null, it.next(&world));
 }
@@ -661,7 +661,7 @@ test "a plugin's build can register systems" {
             try world.addSystem(allocator, "update", system, self);
         }
 
-        fn system(self: *@This(), _: *World) void {
+        fn system(self: *@This(), _: *const std.mem.Allocator, _: *World) void {
             self.calls += 1;
         }
     };
@@ -673,7 +673,7 @@ test "a plugin's build can register systems" {
 
     var it = world.iterateSystems();
     const entry: SystemEntry = it.next(&world).?;
-    entry.run(&world);
+    entry.run(std.testing.allocator, &world);
     const plugin_system = entry.plugin_function;
     const plugin: *Plugin = @ptrCast(@alignCast(plugin_system.plugin));
     try std.testing.expectEqual(1, plugin.calls);
@@ -716,7 +716,7 @@ test "plugin systems share state across runs" {
             try world.addSystem(allocator, "observe", increment, self);
         }
 
-        fn increment(self: *@This(), _: *World) void {
+        fn increment(self: *@This(), _: *const std.mem.Allocator, _: *World) void {
             self.count += 1;
         }
     };
@@ -726,9 +726,9 @@ test "plugin systems share state across runs" {
     try world.addPlugin(std.testing.allocator, Plugin);
 
     var first = world.iterateSystems();
-    while (first.next(&world)) |entry| entry.run(&world);
+    while (first.next(&world)) |entry| entry.run(std.testing.allocator, &world);
     var second = world.iterateSystems();
-    while (second.next(&world)) |entry| entry.run(&world);
+    while (second.next(&world)) |entry| entry.run(std.testing.allocator, &world);
 
     const first_entry = world.system_registry.groups.values()[0].items[0].plugin_function;
     const plugin: *Plugin = @ptrCast(@alignCast(first_entry.plugin));
@@ -750,7 +750,7 @@ test "systems registered before a plugin build failure remain valid" {
             return error.Boom;
         }
 
-        fn update(self: *@This(), _: *World) void {
+        fn update(self: *@This(), _: *const std.mem.Allocator, _: *World) void {
             self.calls += 1;
         }
     };
@@ -764,7 +764,7 @@ test "systems registered before a plugin build failure remain valid" {
     );
     var iterator = world.iterateSystems();
     const entry = iterator.next(&world).?;
-    entry.run(&world);
+    entry.run(std.testing.allocator, &world);
     const plugin: *Plugin = @ptrCast(@alignCast(entry.plugin_function.plugin));
     try std.testing.expectEqual(1, plugin.calls);
 }
@@ -775,7 +775,7 @@ test "World.trigger runs an observer registered through World.addObserver" {
         var seen: u32 = 0;
     };
     const onDamage = struct {
-        fn call(_: *World, event: *const Damage) callconv(.c) void {
+        fn call(_: *World, _: *const std.mem.Allocator, event: *const Damage) callconv(.c) void {
             State.seen = event.amount;
         }
     }.call;
@@ -784,7 +784,7 @@ test "World.trigger runs an observer registered through World.addObserver" {
     defer world.deinit(std.testing.allocator);
 
     try world.addObserver(std.testing.allocator, onDamage, null);
-    world.trigger(Damage{ .amount = 7 });
+    world.trigger(std.testing.allocator, Damage{ .amount = 7 });
 
     try std.testing.expectEqual(7, State.seen);
 }
@@ -798,7 +798,7 @@ test "a plugin's build can register an observer through World.addObserver" {
             try world.addObserver(allocator, onDamage, self);
         }
 
-        fn onDamage(self: *@This(), _: *World, event: *const Damage) void {
+        fn onDamage(self: *@This(), _: *const std.mem.Allocator, _: *World, event: *const Damage) void {
             self.total += event.amount;
         }
     };
@@ -807,7 +807,7 @@ test "a plugin's build can register an observer through World.addObserver" {
     defer world.deinit(std.testing.allocator);
 
     try world.addPlugin(std.testing.allocator, Plugin);
-    world.trigger(Damage{ .amount = 5 });
+    world.trigger(std.testing.allocator, Damage{ .amount = 5 });
 
     const entry = world.system_registry.observers.values()[0].items[0];
     const plugin: *Plugin = @ptrCast(@alignCast(entry.plugin_function.plugin));
