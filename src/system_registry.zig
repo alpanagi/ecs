@@ -1,9 +1,13 @@
 const std = @import("std");
 
 const World = @import("world.zig").World;
+const hash = @import("hash.zig").hash;
 
 pub const SystemFunction = *const fn (*World) callconv(.c) void;
+pub const ObserverFunction = *const fn (*World, *const anyopaque) callconv(.c) void;
+
 pub const PluginSystemFunction = *const fn (*anyopaque, *World) callconv(.c) void;
+pub const PluginObserverFunction = *const fn (*anyopaque, *World, *const anyopaque) callconv(.c) void;
 
 pub const SystemEntry = union(enum) {
     function: SystemFunction,
@@ -20,8 +24,24 @@ pub const SystemEntry = union(enum) {
     }
 };
 
+pub const ObserverEntry = union(enum) {
+    function: ObserverFunction,
+    plugin_function: struct {
+        plugin: *anyopaque,
+        function: PluginObserverFunction,
+    },
+
+    pub fn run(self: ObserverEntry, world: *World, event: *const anyopaque) void {
+        switch (self) {
+            .function => |function| function(world, event),
+            .plugin_function => |observer| observer.function(observer.plugin, world, event),
+        }
+    }
+};
+
 pub const SystemRegistry = struct {
     groups: std.AutoArrayHashMapUnmanaged(u64, std.ArrayList(SystemEntry)) = .{},
+    observers: std.AutoArrayHashMapUnmanaged(u64, std.ArrayList(ObserverEntry)) = .{},
 
     pub fn init() SystemRegistry {
         return .{};
@@ -30,6 +50,8 @@ pub const SystemRegistry = struct {
     pub fn deinit(self: *SystemRegistry, allocator: std.mem.Allocator) void {
         for (self.groups.values()) |*group| group.deinit(allocator);
         self.groups.deinit(allocator);
+        for (self.observers.values()) |*group| group.deinit(allocator);
+        self.observers.deinit(allocator);
     }
 
     pub fn registerSystem(
@@ -59,26 +81,75 @@ pub const SystemRegistry = struct {
                 .function = pluginInvoker(Plugin, function),
             } };
         }
-        try self.appendEntry(allocator, group, entry);
+        try appendEntry(SystemEntry, &self.groups, allocator, group, entry);
     }
 
-    fn appendEntry(
+    pub fn registerObserver(
         self: *SystemRegistry,
         allocator: std.mem.Allocator,
-        group: u64,
-        entry: SystemEntry,
+        comptime function: anytype,
+        plugin: anytype,
     ) !void {
-        const gop = try self.groups.getOrPut(allocator, group);
-        if (!gop.found_existing) gop.value_ptr.* = .empty;
-        gop.value_ptr.append(allocator, entry) catch |err| {
-            if (!gop.found_existing) {
-                gop.value_ptr.deinit(allocator);
-                std.debug.assert(self.groups.orderedRemove(group));
+        var entry: ObserverEntry = undefined;
+        var event: u64 = undefined;
+
+        if (comptime @TypeOf(plugin) == @TypeOf(null)) {
+            const info = functionInfo(@TypeOf(function));
+            if (info.params.len != 2 or
+                info.params[0].type.? != *World or
+                info.return_type.? != void)
+            {
+                @compileError("an observer without a plugin must have signature fn (*World, *const EventType) void");
             }
-            return err;
-        };
+            const EventType = eventType(info.params[1].type.?);
+            event = hash(EventType);
+            entry = .{ .function = observerInvoker(EventType, function) };
+        } else {
+            const Plugin = pluginType(@TypeOf(plugin));
+            const info = functionInfo(@TypeOf(function));
+            if (info.params.len != 3 or
+                info.params[0].type.? != *Plugin or
+                info.params[1].type.? != *World or
+                info.return_type.? != void)
+            {
+                @compileError("a plugin observer must have signature fn (*Plugin, *World, *const EventType) void");
+            }
+            const EventType = eventType(info.params[2].type.?);
+            event = hash(EventType);
+            const typed_plugin: *Plugin = plugin;
+            entry = .{ .plugin_function = .{
+                .plugin = typed_plugin,
+                .function = pluginObserverInvoker(Plugin, EventType, function),
+            } };
+        }
+
+        try appendEntry(ObserverEntry, &self.observers, allocator, event, entry);
+    }
+
+    pub fn dispatch(self: *SystemRegistry, event: u64, world: *World, payload: *const anyopaque) void {
+        if (self.observers.get(event)) |entries| {
+            for (entries.items) |entry| entry.run(world, payload);
+        }
     }
 };
+
+fn appendEntry(
+    comptime Entry: type,
+    map: *std.AutoArrayHashMapUnmanaged(u64, std.ArrayList(Entry)),
+    allocator: std.mem.Allocator,
+    key: u64,
+    entry: Entry,
+) !void {
+    const gop = try map.getOrPut(allocator, key);
+    if (!gop.found_existing) gop.value_ptr.* = .empty;
+    gop.value_ptr.append(allocator, entry) catch |err| {
+        if (!gop.found_existing) {
+            gop.value_ptr.deinit(allocator);
+            _ = map.orderedRemove(key);
+        }
+        return err;
+    };
+}
 
 fn pluginType(comptime Pointer: type) type {
     const pointer = switch (@typeInfo(Pointer)) {
@@ -102,6 +173,17 @@ fn validatePluginFunction(comptime Plugin: type, comptime Function: type) void {
     }
 }
 
+fn eventType(comptime Pointer: type) type {
+    const pointer = switch (@typeInfo(Pointer)) {
+        .pointer => |info| info,
+        else => @compileError("an observer's event parameter must be a pointer"),
+    };
+    if (pointer.size != .one or !pointer.is_const) {
+        @compileError("an observer's event parameter must be a const single-item pointer");
+    }
+    return pointer.child;
+}
+
 fn functionInfo(comptime F: type) std.builtin.Type.Fn {
     return switch (@typeInfo(F)) {
         .@"fn" => |info| info,
@@ -118,6 +200,25 @@ fn pluginInvoker(comptime T: type, comptime function: anytype) PluginSystemFunct
         fn call(plugin: *anyopaque, world: *World) callconv(.c) void {
             const typed_plugin: *T = @ptrCast(@alignCast(plugin));
             function(typed_plugin, world);
+        }
+    }.call;
+}
+
+fn pluginObserverInvoker(comptime T: type, comptime EventType: type, comptime function: anytype) PluginObserverFunction {
+    return struct {
+        fn call(plugin: *anyopaque, world: *World, event: *const anyopaque) callconv(.c) void {
+            const typed_plugin: *T = @ptrCast(@alignCast(plugin));
+            const typed_event: *const EventType = @ptrCast(@alignCast(event));
+            function(typed_plugin, world, typed_event);
+        }
+    }.call;
+}
+
+fn observerInvoker(comptime EventType: type, comptime function: anytype) ObserverFunction {
+    return struct {
+        fn call(world: *World, event: *const anyopaque) callconv(.c) void {
+            const typed_event: *const EventType = @ptrCast(@alignCast(event));
+            function(world, typed_event);
         }
     }.call;
 }
@@ -260,4 +361,105 @@ test "iterator returns null immediately when nothing is registered" {
     defer world.deinit(std.testing.allocator);
     var iterator = SystemIterator{};
     try std.testing.expectEqual(null, iterator.next(&world));
+}
+
+test "dispatch runs a registered observer with the triggered event's data" {
+    const Damage = struct { amount: u32 };
+    const State = struct {
+        var seen: u32 = 0;
+    };
+    const observer = struct {
+        fn call(_: *World, event: *const Damage) callconv(.c) void {
+            State.seen = event.amount;
+        }
+    }.call;
+
+    var world = World.init();
+    defer world.deinit(std.testing.allocator);
+    try world.system_registry.registerObserver(std.testing.allocator, observer, null);
+
+    const damage = Damage{ .amount = 10 };
+    world.system_registry.dispatch(hash(Damage), &world, &damage);
+
+    try std.testing.expectEqual(10, State.seen);
+}
+
+test "dispatch binds the plugin pointer when provided" {
+    const Damage = struct { amount: u32 };
+    const Plugin = struct {
+        total: u32 = 0,
+
+        fn onDamage(self: *@This(), _: *World, event: *const Damage) void {
+            self.total += event.amount;
+        }
+    };
+
+    var world = World.init();
+    defer world.deinit(std.testing.allocator);
+    var plugin = Plugin{};
+    try world.system_registry.registerObserver(std.testing.allocator, Plugin.onDamage, &plugin);
+
+    world.system_registry.dispatch(hash(Damage), &world, &Damage{ .amount = 3 });
+    world.system_registry.dispatch(hash(Damage), &world, &Damage{ .amount = 4 });
+
+    try std.testing.expectEqual(7, plugin.total);
+}
+
+test "dispatch runs observers for the same event type in registration order" {
+    const Damage = struct { amount: u32 };
+    const State = struct {
+        var calls: [2]u8 = undefined;
+        var count: usize = 0;
+    };
+    const a = struct {
+        fn call(_: *World, _: *const Damage) callconv(.c) void {
+            State.calls[State.count] = 1;
+            State.count += 1;
+        }
+    }.call;
+    const b = struct {
+        fn call(_: *World, _: *const Damage) callconv(.c) void {
+            State.calls[State.count] = 2;
+            State.count += 1;
+        }
+    }.call;
+
+    var world = World.init();
+    defer world.deinit(std.testing.allocator);
+    try world.system_registry.registerObserver(std.testing.allocator, a, null);
+    try world.system_registry.registerObserver(std.testing.allocator, b, null);
+
+    world.system_registry.dispatch(hash(Damage), &world, &Damage{ .amount = 1 });
+
+    try std.testing.expectEqualSlices(u8, &.{ 1, 2 }, &State.calls);
+}
+
+test "dispatch does not run observers registered for a different event type" {
+    const Damage = struct { amount: u32 };
+    const Healing = struct { amount: u32 };
+    const State = struct {
+        var damage_calls: usize = 0;
+    };
+    const onDamage = struct {
+        fn call(_: *World, _: *const Damage) callconv(.c) void {
+            State.damage_calls += 1;
+        }
+    }.call;
+
+    var world = World.init();
+    defer world.deinit(std.testing.allocator);
+    try world.system_registry.registerObserver(std.testing.allocator, onDamage, null);
+
+    world.system_registry.dispatch(hash(Healing), &world, &Healing{ .amount = 5 });
+
+    try std.testing.expectEqual(0, State.damage_calls);
+}
+
+test "dispatch is a no-op when nothing is registered for the event" {
+    const Damage = struct { amount: u32 };
+
+    var world = World.init();
+    defer world.deinit(std.testing.allocator);
+
+    world.system_registry.dispatch(hash(Damage), &world, &Damage{ .amount = 1 });
 }

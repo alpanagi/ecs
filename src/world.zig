@@ -113,6 +113,19 @@ pub const World = struct {
         return .{};
     }
 
+    pub fn addObserver(
+        self: *World,
+        allocator: std.mem.Allocator,
+        comptime function: anytype,
+        plugin: anytype,
+    ) !void {
+        try self.system_registry.registerObserver(allocator, function, plugin);
+    }
+
+    pub fn trigger(self: *World, event: anytype) void {
+        self.system_registry.dispatch(hash(@TypeOf(event)), self, &event);
+    }
+
     pub fn addPlugin(self: *World, allocator: std.mem.Allocator, comptime T: type) !void {
         try self.plugin_registry.addPlugin(allocator, self, T);
     }
@@ -754,4 +767,49 @@ test "systems registered before a plugin build failure remain valid" {
     entry.run(&world);
     const plugin: *Plugin = @ptrCast(@alignCast(entry.plugin_function.plugin));
     try std.testing.expectEqual(1, plugin.calls);
+}
+
+test "World.trigger runs an observer registered through World.addObserver" {
+    const Damage = struct { amount: u32 };
+    const State = struct {
+        var seen: u32 = 0;
+    };
+    const onDamage = struct {
+        fn call(_: *World, event: *const Damage) callconv(.c) void {
+            State.seen = event.amount;
+        }
+    }.call;
+
+    var world = World.init();
+    defer world.deinit(std.testing.allocator);
+
+    try world.addObserver(std.testing.allocator, onDamage, null);
+    world.trigger(Damage{ .amount = 7 });
+
+    try std.testing.expectEqual(7, State.seen);
+}
+
+test "a plugin's build can register an observer through World.addObserver" {
+    const Damage = struct { amount: u32 };
+    const Plugin = struct {
+        total: u32 = 0,
+
+        pub fn build(self: *@This(), allocator: std.mem.Allocator, world: *World) !void {
+            try world.addObserver(allocator, onDamage, self);
+        }
+
+        fn onDamage(self: *@This(), _: *World, event: *const Damage) void {
+            self.total += event.amount;
+        }
+    };
+
+    var world = World.init();
+    defer world.deinit(std.testing.allocator);
+
+    try world.addPlugin(std.testing.allocator, Plugin);
+    world.trigger(Damage{ .amount = 5 });
+
+    const entry = world.system_registry.observers.values()[0].items[0];
+    const plugin: *Plugin = @ptrCast(@alignCast(entry.plugin_function.plugin));
+    try std.testing.expectEqual(5, plugin.total);
 }
