@@ -109,8 +109,8 @@ pub const World = struct {
         try self.system_registry.registerSystem(allocator, hashBytes(group), function, plugin);
     }
 
-    pub fn iterateSystems(self: *World) SystemIterator {
-        return self.system_registry.iterateSystems();
+    pub fn iterateSystems(_: *World) SystemIterator {
+        return .{};
     }
 
     pub fn addPlugin(self: *World, allocator: std.mem.Allocator, comptime T: type) !void {
@@ -579,9 +579,9 @@ test "addSystem then iterateSystems yields the system" {
     try world.addSystem(std.testing.allocator, "physics", system, null);
 
     var it = world.iterateSystems();
-    it.next(&world.system_registry).?.run(&world);
+    it.next(&world).?.run(&world);
     try std.testing.expect(State.called);
-    try std.testing.expectEqual(null, it.next(&world.system_registry));
+    try std.testing.expectEqual(null, it.next(&world));
 }
 
 test "addSystem groups systems by the same group name in call order" {
@@ -609,10 +609,10 @@ test "addSystem groups systems by the same group name in call order" {
     try world.addSystem(std.testing.allocator, "physics", b, null);
 
     var it = world.iterateSystems();
-    it.next(&world.system_registry).?.run(&world);
-    it.next(&world.system_registry).?.run(&world);
+    it.next(&world).?.run(&world);
+    it.next(&world).?.run(&world);
     try std.testing.expectEqualSlices(u8, &.{ 1, 2 }, &State.calls);
-    try std.testing.expectEqual(null, it.next(&world.system_registry));
+    try std.testing.expectEqual(null, it.next(&world));
 }
 
 test "addPlugin runs the plugin's init immediately" {
@@ -659,12 +659,12 @@ test "a plugin's build can register systems" {
     try world.addPlugin(std.testing.allocator, Plugin);
 
     var it = world.iterateSystems();
-    const entry: SystemEntry = it.next(&world.system_registry).?;
+    const entry: SystemEntry = it.next(&world).?;
     entry.run(&world);
     const plugin_system = entry.plugin_function;
     const plugin: *Plugin = @ptrCast(@alignCast(plugin_system.plugin));
     try std.testing.expectEqual(1, plugin.calls);
-    try std.testing.expectEqual(null, it.next(&world.system_registry));
+    try std.testing.expectEqual(null, it.next(&world));
 }
 
 test "deinit calls a plugin's deinit" {
@@ -713,9 +713,9 @@ test "plugin systems share state across runs" {
     try world.addPlugin(std.testing.allocator, Plugin);
 
     var first = world.iterateSystems();
-    while (first.next(&world.system_registry)) |entry| entry.run(&world);
+    while (first.next(&world)) |entry| entry.run(&world);
     var second = world.iterateSystems();
-    while (second.next(&world.system_registry)) |entry| entry.run(&world);
+    while (second.next(&world)) |entry| entry.run(&world);
 
     const first_entry = world.system_registry.groups.values()[0].items[0].plugin_function;
     const plugin: *Plugin = @ptrCast(@alignCast(first_entry.plugin));
@@ -750,7 +750,7 @@ test "systems registered before a plugin build failure remain valid" {
         world.addPlugin(std.testing.allocator, Plugin),
     );
     var iterator = world.iterateSystems();
-    const entry = iterator.next(&world.system_registry).?;
+    const entry = iterator.next(&world).?;
     entry.run(&world);
     const plugin: *Plugin = @ptrCast(@alignCast(entry.plugin_function.plugin));
     try std.testing.expectEqual(1, plugin.calls);

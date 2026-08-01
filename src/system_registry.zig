@@ -78,10 +78,6 @@ pub const SystemRegistry = struct {
             return err;
         };
     }
-
-    pub fn iterateSystems(_: *SystemRegistry) SystemIterator {
-        return .{};
-    }
 };
 
 fn pluginType(comptime Pointer: type) type {
@@ -130,8 +126,8 @@ pub const SystemIterator = struct {
     group_index: usize = 0,
     system_index: usize = 0,
 
-    pub fn next(self: *SystemIterator, registry: *SystemRegistry) ?SystemEntry {
-        const groups = registry.groups.values();
+    pub fn next(self: *SystemIterator, world: *World) ?SystemEntry {
+        const groups = world.system_registry.groups.values();
         while (self.group_index < groups.len) {
             const group = groups[self.group_index];
             if (self.system_index < group.items.len) {
@@ -177,16 +173,14 @@ test "registerSystem appends to an existing group in call order" {
         }
     }.call;
 
-    var registry = SystemRegistry.init();
-    defer registry.deinit(std.testing.allocator);
     var world = World.init();
     defer world.deinit(std.testing.allocator);
-    try registry.registerSystem(std.testing.allocator, 1, a, null);
-    try registry.registerSystem(std.testing.allocator, 1, b, null);
+    try world.system_registry.registerSystem(std.testing.allocator, 1, a, null);
+    try world.system_registry.registerSystem(std.testing.allocator, 1, b, null);
 
-    var iterator = registry.iterateSystems();
-    iterator.next(&registry).?.run(&world);
-    iterator.next(&registry).?.run(&world);
+    var iterator = SystemIterator{};
+    iterator.next(&world).?.run(&world);
+    iterator.next(&world).?.run(&world);
     try std.testing.expectEqualSlices(u8, &.{ 1, 2 }, &State.calls);
 }
 
@@ -199,15 +193,13 @@ test "registerSystem binds the plugin pointer when provided" {
         }
     };
 
-    var registry = SystemRegistry.init();
-    defer registry.deinit(std.testing.allocator);
     var world = World.init();
     defer world.deinit(std.testing.allocator);
     var plugin = Plugin{};
-    try registry.registerSystem(std.testing.allocator, 1, Plugin.update, &plugin);
+    try world.system_registry.registerSystem(std.testing.allocator, 1, Plugin.update, &plugin);
 
-    var iterator = registry.iterateSystems();
-    iterator.next(&registry).?.run(&world);
+    var iterator = SystemIterator{};
+    iterator.next(&world).?.run(&world);
     try std.testing.expectEqual(1, plugin.calls);
 }
 
@@ -252,22 +244,20 @@ test "iterator yields systems group by group, in registration order" {
         }
     }.call;
 
-    var registry = SystemRegistry.init();
-    defer registry.deinit(std.testing.allocator);
     var world = World.init();
     defer world.deinit(std.testing.allocator);
-    try registry.registerSystem(std.testing.allocator, 2, a, null);
-    try registry.registerSystem(std.testing.allocator, 1, b, null);
-    try registry.registerSystem(std.testing.allocator, 2, c, null);
+    try world.system_registry.registerSystem(std.testing.allocator, 2, a, null);
+    try world.system_registry.registerSystem(std.testing.allocator, 1, b, null);
+    try world.system_registry.registerSystem(std.testing.allocator, 2, c, null);
 
-    var iterator = registry.iterateSystems();
-    while (iterator.next(&registry)) |entry| entry.run(&world);
+    var iterator = SystemIterator{};
+    while (iterator.next(&world)) |entry| entry.run(&world);
     try std.testing.expectEqualSlices(u8, &.{ 1, 3, 2 }, &State.calls);
 }
 
 test "iterator returns null immediately when nothing is registered" {
-    var registry = SystemRegistry.init();
-    defer registry.deinit(std.testing.allocator);
-    var iterator = registry.iterateSystems();
-    try std.testing.expectEqual(null, iterator.next(&registry));
+    var world = World.init();
+    defer world.deinit(std.testing.allocator);
+    var iterator = SystemIterator{};
+    try std.testing.expectEqual(null, iterator.next(&world));
 }
