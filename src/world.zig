@@ -662,7 +662,7 @@ test "addPlugin runs the plugin's init immediately" {
             return .{};
         }
 
-        pub fn build(_: *@This(), _: std.mem.Allocator, _: *World) !void {}
+        pub fn build(_: *@This(), _: *const std.mem.Allocator, _: *World) !void {}
     };
 
     var world = World.init();
@@ -681,8 +681,8 @@ test "a plugin's build can register systems" {
             return .{};
         }
 
-        pub fn build(self: *@This(), allocator: std.mem.Allocator, world: *World) !void {
-            try world.addSystem(allocator, "update", system, self);
+        pub fn build(self: *@This(), allocator: *const std.mem.Allocator, world: *World) !void {
+            try world.addSystem(allocator.*, "update", system, self);
         }
 
         fn system(self: *@This(), _: *const std.mem.Allocator, _: *World) void {
@@ -710,7 +710,7 @@ test "deinit calls a plugin's deinit" {
             return .{};
         }
 
-        pub fn build(_: *@This(), _: std.mem.Allocator, _: *World) !void {}
+        pub fn build(_: *@This(), _: *const std.mem.Allocator, _: *World) !void {}
 
         pub fn deinit(_: *@This(), _: std.mem.Allocator) void {
             State.count += 1;
@@ -732,9 +732,9 @@ test "plugin systems share state across runs" {
             return .{};
         }
 
-        pub fn build(self: *@This(), allocator: std.mem.Allocator, world: *World) !void {
-            try world.addSystem(allocator, "update", increment, self);
-            try world.addSystem(allocator, "observe", increment, self);
+        pub fn build(self: *@This(), allocator: *const std.mem.Allocator, world: *World) !void {
+            try world.addSystem(allocator.*, "update", increment, self);
+            try world.addSystem(allocator.*, "observe", increment, self);
         }
 
         fn increment(self: *@This(), _: *const std.mem.Allocator, _: *World) void {
@@ -764,8 +764,8 @@ test "systems registered before a plugin build failure remain valid" {
             return .{};
         }
 
-        pub fn build(self: *@This(), allocator: std.mem.Allocator, world: *World) !void {
-            try world.addSystem(allocator, "update", update, self);
+        pub fn build(self: *@This(), allocator: *const std.mem.Allocator, world: *World) !void {
+            try world.addSystem(allocator.*, "update", update, self);
             return error.Boom;
         }
 
@@ -812,8 +812,8 @@ test "a plugin's build can register an observer through World.addObserver" {
     const Plugin = struct {
         total: u32 = 0,
 
-        pub fn build(self: *@This(), allocator: std.mem.Allocator, world: *World) !void {
-            try world.addObserver(allocator, onDamage, self);
+        pub fn build(self: *@This(), allocator: *const std.mem.Allocator, world: *World) !void {
+            try world.addObserver(allocator.*, onDamage, self);
         }
 
         fn onDamage(self: *@This(), _: *const std.mem.Allocator, _: *World, event: *const Damage) void {
@@ -856,8 +856,8 @@ test "a plugin's build can register a one-shot system through World.addOneShotSy
     const Plugin = struct {
         calls: usize = 0,
 
-        pub fn build(self: *@This(), allocator: std.mem.Allocator, world: *World) !void {
-            try world.addOneShotSystem(allocator, tick, self);
+        pub fn build(self: *@This(), allocator: *const std.mem.Allocator, world: *World) !void {
+            try world.addOneShotSystem(allocator.*, tick, self);
         }
 
         fn tick(self: *@This(), _: *const std.mem.Allocator, _: *World) void {
@@ -910,9 +910,9 @@ test "World.removeResource removes it and calls its deinit" {
 test "a plugin's build can register a resource, read later by a system" {
     const ClearColor = struct { r: f32, g: f32, b: f32 };
     const ConfigPlugin = struct {
-        pub fn build(_: *@This(), allocator: std.mem.Allocator, world: *World) !void {
-            try world.addResource(allocator, ClearColor, .{ .r = 1, .g = 1, .b = 1 });
-            try world.addSystem(allocator, "update", fadeToBlack, null);
+        pub fn build(_: *@This(), allocator: *const std.mem.Allocator, world: *World) !void {
+            try world.addResource(allocator.*, ClearColor, .{ .r = 1, .g = 1, .b = 1 });
+            try world.addSystem(allocator.*, "update", fadeToBlack, null);
         }
 
         fn fadeToBlack(world: *World, _: *const std.mem.Allocator) callconv(.c) void {

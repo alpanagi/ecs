@@ -53,7 +53,7 @@ pub const PluginRegistry = struct {
         if (!std.meta.hasFn(T, "build")) {
             @compileError(@typeName(T) ++ " must declare build");
         }
-        try plugin.build(allocator, world);
+        try plugin.build(&allocator, world);
     }
 };
 
@@ -67,7 +67,7 @@ test "addPlugin runs the plugin's init immediately and stores it" {
             return .{};
         }
 
-        pub fn build(_: *@This(), _: std.mem.Allocator, _: *World) !void {}
+        pub fn build(_: *@This(), _: *const std.mem.Allocator, _: *World) !void {}
     };
 
     var world = World.init();
@@ -93,7 +93,7 @@ test "a plugin's build receives the initialized plugin and world" {
             return .{ .initialized = true };
         }
 
-        pub fn build(self: *@This(), _: std.mem.Allocator, world: *World) !void {
+        pub fn build(self: *@This(), _: *const std.mem.Allocator, world: *World) !void {
             try std.testing.expect(self.initialized);
             State.seen = world;
         }
@@ -118,7 +118,7 @@ test "a plugin can allocate state in init and free it in deinit" {
             return .{ .buffer = try allocator.alloc(u8, 8) };
         }
 
-        pub fn build(_: *@This(), _: std.mem.Allocator, _: *World) !void {}
+        pub fn build(_: *@This(), _: *const std.mem.Allocator, _: *World) !void {}
 
         pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
             allocator.free(self.buffer);
@@ -142,7 +142,7 @@ test "deinit calls each plugin's deinit" {
             return .{};
         }
 
-        pub fn build(_: *@This(), _: std.mem.Allocator, _: *World) !void {}
+        pub fn build(_: *@This(), _: *const std.mem.Allocator, _: *World) !void {}
 
         pub fn deinit(_: *@This(), _: std.mem.Allocator) void {
             State.count += 1;
@@ -153,7 +153,7 @@ test "deinit calls each plugin's deinit" {
             return .{};
         }
 
-        pub fn build(_: *@This(), _: std.mem.Allocator, _: *World) !void {}
+        pub fn build(_: *@This(), _: *const std.mem.Allocator, _: *World) !void {}
 
         pub fn deinit(_: *@This(), _: std.mem.Allocator) void {
             State.count += 1;
@@ -182,7 +182,7 @@ test "the same plugin type can currently be added more than once" {
             return .{};
         }
 
-        pub fn build(_: *@This(), _: std.mem.Allocator, _: *World) !void {}
+        pub fn build(_: *@This(), _: *const std.mem.Allocator, _: *World) !void {}
     };
 
     var world = World.init();
@@ -205,7 +205,7 @@ test "deinit supports a plugin deinit that takes no allocator" {
             return .{};
         }
 
-        pub fn build(_: *@This(), _: std.mem.Allocator, _: *World) !void {}
+        pub fn build(_: *@This(), _: *const std.mem.Allocator, _: *World) !void {}
 
         pub fn deinit(_: *@This()) void {
             State.count += 1;
@@ -225,7 +225,7 @@ test "deinit supports a plugin deinit that takes no allocator" {
 
 test "a plugin without a deinit is added and freed without error" {
     const Plugin = struct {
-        pub fn build(_: *@This(), _: std.mem.Allocator, _: *World) !void {}
+        pub fn build(_: *@This(), _: *const std.mem.Allocator, _: *World) !void {}
     };
 
     var world = World.init();
@@ -245,7 +245,7 @@ test "addPlugin propagates an init error and stores nothing" {
             return error.Boom;
         }
 
-        pub fn build(_: *@This(), _: std.mem.Allocator, _: *World) !void {}
+        pub fn build(_: *@This(), _: *const std.mem.Allocator, _: *World) !void {}
     };
 
     var world = World.init();
@@ -271,7 +271,7 @@ test "a failed init does not trigger the plugin's deinit" {
             return error.Boom;
         }
 
-        pub fn build(_: *@This(), _: std.mem.Allocator, _: *World) !void {}
+        pub fn build(_: *@This(), _: *const std.mem.Allocator, _: *World) !void {}
 
         pub fn deinit(_: *@This(), _: std.mem.Allocator) void {
             State.deinit_count += 1;
@@ -298,7 +298,7 @@ test "a plugin remains stored when its build fails" {
             return .{};
         }
 
-        pub fn build(_: *@This(), _: std.mem.Allocator, _: *World) !void {
+        pub fn build(_: *@This(), _: *const std.mem.Allocator, _: *World) !void {
             return error.Boom;
         }
     };
