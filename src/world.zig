@@ -10,6 +10,7 @@ const EntityComponents = @import("util.zig").EntityComponents;
 const PluginRegistry = @import("plugin_registry.zig").PluginRegistry;
 const SystemRegistry = @import("system_registry.zig").SystemRegistry;
 const SystemEntry = @import("system_registry.zig").SystemEntry;
+const ResourceRegistry = @import("resource_registry.zig").ResourceRegistry;
 
 pub const World = struct {
     archetypes: std.ArrayList(Archetype),
@@ -22,6 +23,7 @@ pub const World = struct {
 
     system_registry: SystemRegistry,
     plugin_registry: PluginRegistry,
+    resource_registry: ResourceRegistry,
 
     pub fn init() World {
         return .{
@@ -32,6 +34,7 @@ pub const World = struct {
             .entity_free_list = .empty,
             .system_registry = SystemRegistry.init(),
             .plugin_registry = PluginRegistry.init(),
+            .resource_registry = ResourceRegistry.init(),
         };
     }
 
@@ -45,6 +48,7 @@ pub const World = struct {
         self.entity_free_list.deinit(allocator);
         self.system_registry.deinit(allocator);
         self.plugin_registry.deinit(allocator);
+        self.resource_registry.deinit(allocator);
     }
 
     pub fn addEntity(self: *World, allocator: std.mem.Allocator, components: anytype) !Entity {
@@ -136,6 +140,23 @@ pub const World = struct {
 
     pub fn addPlugin(self: *World, allocator: std.mem.Allocator, comptime T: type) !void {
         try self.plugin_registry.addPlugin(allocator, self, T);
+    }
+
+    pub fn addResource(
+        self: *World,
+        allocator: std.mem.Allocator,
+        comptime T: type,
+        value: T,
+    ) !void {
+        try self.resource_registry.addResource(allocator, T, value);
+    }
+
+    pub fn getResource(self: *World, comptime T: type) ?*T {
+        return self.resource_registry.getResource(T);
+    }
+
+    pub fn removeResource(self: *World, allocator: std.mem.Allocator, comptime T: type) void {
+        self.resource_registry.removeResource(allocator, T);
     }
 
     fn findOrCreateArchetype(
@@ -852,4 +873,61 @@ test "a plugin's build can register a one-shot system through World.addOneShotSy
 
     const plugin: *Plugin = @ptrCast(@alignCast(world.plugin_registry.plugins.items[0].plugin));
     try std.testing.expectEqual(1, plugin.calls);
+}
+
+test "World.addResource then World.getResource returns the stored value" {
+    const ClearColor = struct { r: f32, g: f32, b: f32 };
+
+    var world = World.init();
+    defer world.deinit(std.testing.allocator);
+
+    try world.addResource(std.testing.allocator, ClearColor, .{ .r = 0, .g = 1, .b = 0 });
+
+    const color = world.getResource(ClearColor).?;
+    try std.testing.expectEqual(ClearColor{ .r = 0, .g = 1, .b = 0 }, color.*);
+}
+
+test "World.removeResource removes it and calls its deinit" {
+    const State = struct {
+        var count: usize = 0;
+    };
+    const Tracked = struct {
+        pub fn deinit(_: *@This()) void {
+            State.count += 1;
+        }
+    };
+
+    var world = World.init();
+    defer world.deinit(std.testing.allocator);
+
+    try world.addResource(std.testing.allocator, Tracked, .{});
+    world.removeResource(std.testing.allocator, Tracked);
+
+    try std.testing.expectEqual(1, State.count);
+    try std.testing.expectEqual(null, world.getResource(Tracked));
+}
+
+test "a plugin's build can register a resource, read later by a system" {
+    const ClearColor = struct { r: f32, g: f32, b: f32 };
+    const ConfigPlugin = struct {
+        pub fn build(_: *@This(), allocator: std.mem.Allocator, world: *World) !void {
+            try world.addResource(allocator, ClearColor, .{ .r = 1, .g = 1, .b = 1 });
+            try world.addSystem(allocator, "update", fadeToBlack, null);
+        }
+
+        fn fadeToBlack(world: *World, _: *const std.mem.Allocator) callconv(.c) void {
+            const color = world.getResource(ClearColor).?;
+            color.r -= 0.1;
+        }
+    };
+
+    var world = World.init();
+    defer world.deinit(std.testing.allocator);
+
+    try world.addPlugin(std.testing.allocator, ConfigPlugin);
+    world.runSystems(std.testing.allocator);
+    world.runSystems(std.testing.allocator);
+
+    const color = world.getResource(ClearColor).?;
+    try std.testing.expectApproxEqAbs(@as(f32, 0.8), color.r, 0.0001);
 }

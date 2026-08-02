@@ -1,8 +1,9 @@
 const std = @import("std");
 
 const World = @import("world.zig").World;
-
-const DeinitFunction = *const fn (*anyopaque, *const std.mem.Allocator) callconv(.c) void;
+const DeinitFunction = @import("deinit.zig").DeinitFunction;
+const getDeinitFunction = @import("deinit.zig").getDeinitFunction;
+const deinitIfPresent = @import("deinit.zig").deinitIfPresent;
 
 const PluginEntry = struct {
     plugin: *anyopaque,
@@ -55,26 +56,6 @@ pub const PluginRegistry = struct {
         try plugin.build(allocator, world);
     }
 };
-
-fn deinitIfPresent(comptime T: type, instance: *T, allocator: std.mem.Allocator) void {
-    if (!std.meta.hasFn(T, "deinit")) return;
-    const params = @typeInfo(@TypeOf(T.deinit)).@"fn".params;
-    switch (params.len) {
-        1 => instance.deinit(),
-        2 => instance.deinit(allocator),
-        else => @compileError(@typeName(T) ++ ".deinit has an unsupported signature"),
-    }
-}
-
-fn getDeinitFunction(comptime T: type) DeinitFunction {
-    return struct {
-        fn deinitFunction(ptr: *anyopaque, allocator: *const std.mem.Allocator) callconv(.c) void {
-            const instance: *T = @ptrCast(@alignCast(ptr));
-            deinitIfPresent(T, instance, allocator.*);
-            allocator.destroy(instance);
-        }
-    }.deinitFunction;
-}
 
 test "addPlugin runs the plugin's init immediately and stores it" {
     const State = struct {
