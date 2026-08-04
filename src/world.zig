@@ -3,6 +3,7 @@ const std = @import("std");
 const Archetype = @import("archetype.zig").Archetype;
 const LifecycleFunctions = @import("archetype.zig").LifecycleFunctions;
 const Entity = @import("entity.zig").Entity;
+const Error = @import("error.zig").Error;
 const Created = @import("lifecycle.zig").Created;
 const Destroyed = @import("lifecycle.zig").Destroyed;
 const hash = @import("hash.zig").hash;
@@ -116,6 +117,20 @@ pub const World = struct {
 
     pub fn query(_: *World, comptime components: []const type) Query(components) {
         return .{};
+    }
+
+    pub fn getEntity(
+        self: *World,
+        entity: Entity,
+        comptime components: []const type,
+    ) !EntityComponents(components) {
+        if (entity.id >= self.entity_generations.items.len) return Error.InvalidEntity;
+        if (self.entity_generations.items[entity.id] != entity.generation) return Error.InvalidEntity;
+
+        const archetype_id = self.entity_archetypes.items[entity.id] orelse return Error.InvalidEntity;
+        const archetype_slot = self.entity_archetype_slots.items[entity.id];
+
+        return self.archetypes.items[archetype_id].getComponents(archetype_slot, components);
     }
 
     pub fn spawn(self: *World, allocator: std.mem.Allocator, components: anytype) !void {
@@ -668,6 +683,72 @@ test "query skips entities in archetypes that don't have the requested component
     }
 
     try std.testing.expectEqual(1, count);
+}
+
+test "World.getEntity returns pointers to the requested entity's components" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+    const Velocity = struct { dx: f32, dy: f32 };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    const entity = try world.addEntity(
+        allocator,
+        .{ Position{ .x = 1, .y = 2 }, Velocity{ .dx = 3, .dy = 4 } },
+    );
+
+    const position, const velocity = try world.getEntity(entity, &.{ Position, Velocity });
+
+    try std.testing.expectEqual(Position{ .x = 1, .y = 2 }, position.*);
+    try std.testing.expectEqual(Velocity{ .dx = 3, .dy = 4 }, velocity.*);
+}
+
+test "World.getEntity returns Error.InvalidEntity for an out-of-range entity index" {
+    const allocator = std.testing.allocator;
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try std.testing.expectError(
+        Error.InvalidEntity,
+        world.getEntity(.{ .id = 999, .generation = 0 }, &.{}),
+    );
+}
+
+test "World.getEntity returns Error.InvalidEntity for a stale generation" {
+    const allocator = std.testing.allocator;
+
+    const Value = struct { value: u64 };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    const entity = try world.addEntity(allocator, .{Value{ .value = 1 }});
+    try world.removeEntity(allocator, entity);
+
+    try std.testing.expectError(
+        Error.InvalidEntity,
+        world.getEntity(entity, &.{Value}),
+    );
+}
+
+test "World.getEntity returns Error.UnknownComponent for a component the entity does not have" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+    const Velocity = struct { dx: f32, dy: f32 };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    const entity = try world.addEntity(allocator, .{Position{ .x = 1, .y = 2 }});
+
+    try std.testing.expectError(
+        Error.UnknownComponent,
+        world.getEntity(entity, &.{Velocity}),
+    );
 }
 
 test "addSystem then runSystems runs the system" {
