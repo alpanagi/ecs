@@ -9,6 +9,13 @@ const sortMultiple = @import("sort.zig").sortMultiple;
 
 const preallocated_entities_count: usize = 16;
 
+pub const LifecycleFunction = *const fn (*anyopaque, std.mem.Allocator, Entity) void;
+
+pub const LifecycleFunctions = struct {
+    created: LifecycleFunction,
+    destroyed: LifecycleFunction,
+};
+
 pub const Archetype = struct {
     entity_count: u32,
     entities: []Entity,
@@ -16,12 +23,15 @@ pub const Archetype = struct {
     component_ids: []const u64,
     component_sizes: []const u32,
     component_deinits: []const ?DeinitFunction,
+    component_created: []const LifecycleFunction,
+    component_destroyed: []const LifecycleFunction,
     data: [][]align(64) u8,
 
     pub fn init(
         allocator: std.mem.Allocator,
         comptime components: []const type,
         capacity: ?usize,
+        comptime lifecycleFunctionsFor: fn (comptime component: type) LifecycleFunctions,
     ) !Archetype {
         const component_ids = try allocator.alloc(u64, components.len);
         errdefer allocator.free(component_ids);
@@ -35,6 +45,16 @@ pub const Archetype = struct {
         errdefer allocator.free(component_deinits);
         inline for (components, 0..) |component, idx| {
             component_deinits[idx] = getDeinitFunctionFor(component);
+        }
+
+        const component_created = try allocator.alloc(LifecycleFunction, components.len);
+        errdefer allocator.free(component_created);
+        const component_destroyed = try allocator.alloc(LifecycleFunction, components.len);
+        errdefer allocator.free(component_destroyed);
+        inline for (components, 0..) |component, idx| {
+            const functions = lifecycleFunctionsFor(component);
+            component_created[idx] = functions.created;
+            component_destroyed[idx] = functions.destroyed;
         }
 
         // Alignment here to optimize cache reads.
@@ -53,7 +73,13 @@ pub const Archetype = struct {
             allocated += 1;
         }
 
-        sortMultiple(component_ids, .{ component_sizes, component_deinits, data });
+        sortMultiple(component_ids, .{
+            component_sizes,
+            component_deinits,
+            component_created,
+            component_destroyed,
+            data,
+        });
 
         const entities = try allocator.alloc(Entity, preallocated_entities_count);
         errdefer allocator.free(entities);
@@ -63,6 +89,8 @@ pub const Archetype = struct {
             .component_ids = component_ids,
             .component_sizes = component_sizes,
             .component_deinits = component_deinits,
+            .component_created = component_created,
+            .component_destroyed = component_destroyed,
             .data = data,
             .entities = entities,
         };
@@ -84,6 +112,8 @@ pub const Archetype = struct {
         allocator.free(self.component_ids);
         allocator.free(self.component_sizes);
         allocator.free(self.component_deinits);
+        allocator.free(self.component_created);
+        allocator.free(self.component_destroyed);
         for (self.data) |value| allocator.free(value);
         allocator.free(self.data);
         allocator.free(self.entities);
@@ -236,6 +266,18 @@ fn getDeinitFunctionFor(comptime component: type) ?DeinitFunction {
     };
 }
 
+fn noOpLifecycleFunctionsFor(comptime component: type) LifecycleFunctions {
+    _ = component;
+    return .{
+        .created = struct {
+            fn call(_: *anyopaque, _: std.mem.Allocator, _: Entity) void {}
+        }.call,
+        .destroyed = struct {
+            fn call(_: *anyopaque, _: std.mem.Allocator, _: Entity) void {}
+        }.call,
+    };
+}
+
 test "Archetype sorts the components on initialization" {
     const allocator = std.testing.allocator;
 
@@ -250,12 +292,12 @@ test "Archetype sorts the components on initialization" {
     const expected_ids: []const u64 = &.{ 9047713391308399252, 15171739973735874036 }; //Value, Type
     const expected_sizes: []const u32 = &.{ @sizeOf(u64), @sizeOf(Type) };
 
-    var archetype = try Archetype.init(allocator, &[_]type{ Value, Type }, null);
+    var archetype = try Archetype.init(allocator, &[_]type{ Value, Type }, null, noOpLifecycleFunctionsFor);
     try std.testing.expectEqualSlices(u64, expected_ids, archetype.component_ids);
     try std.testing.expectEqualSlices(u32, expected_sizes, archetype.component_sizes);
     archetype.deinit(allocator);
 
-    archetype = try Archetype.init(allocator, &[_]type{ Type, Value }, null);
+    archetype = try Archetype.init(allocator, &[_]type{ Type, Value }, null, noOpLifecycleFunctionsFor);
     try std.testing.expectEqualSlices(u64, expected_ids, archetype.component_ids);
     try std.testing.expectEqualSlices(u32, expected_sizes, archetype.component_sizes);
     archetype.deinit(allocator);
@@ -268,7 +310,7 @@ test "Archetype allocates as many component arrays as passed component_ids on in
     const B = struct { value: f32 };
     const C = struct { value: u8 };
 
-    var archetype = try Archetype.init(allocator, &.{ A, B, C }, null);
+    var archetype = try Archetype.init(allocator, &.{ A, B, C }, null, noOpLifecycleFunctionsFor);
     defer archetype.deinit(allocator);
 
     try std.testing.expectEqual(3, archetype.data.len);
@@ -281,7 +323,7 @@ test "Archetype preallocates memory for entities on initialization" {
         data: [54]u8,
     };
 
-    var archetype = try Archetype.init(allocator, &.{Type}, null);
+    var archetype = try Archetype.init(allocator, &.{Type}, null, noOpLifecycleFunctionsFor);
     defer archetype.deinit(allocator);
 
     try std.testing.expectEqual(preallocated_entities_count * @sizeOf(Type), archetype.data[0].len);
@@ -299,7 +341,7 @@ test "Can add entities to archetype" {
         value: u64,
     };
 
-    var archetype = try Archetype.init(allocator, &.{ Type, Value }, null);
+    var archetype = try Archetype.init(allocator, &.{ Type, Value }, null, noOpLifecycleFunctionsFor);
     defer archetype.deinit(allocator);
 
     const type_ = Type{ .data = 112 };
@@ -329,7 +371,7 @@ test "addEntity returns Error.ComponentMismatch when the wrong number of compone
     const Type = struct { data: u32 };
     const Value = struct { value: u64 };
 
-    var archetype = try Archetype.init(allocator, &.{ Type, Value }, null);
+    var archetype = try Archetype.init(allocator, &.{ Type, Value }, null, noOpLifecycleFunctionsFor);
     defer archetype.deinit(allocator);
 
     try std.testing.expectError(
@@ -344,7 +386,7 @@ test "addEntity returns Error.UnknownComponent when a passed component type is n
     const Type = struct { data: u32 };
     const Value = struct { value: u64 };
 
-    var archetype = try Archetype.init(allocator, &.{Type}, null);
+    var archetype = try Archetype.init(allocator, &.{Type}, null, noOpLifecycleFunctionsFor);
     defer archetype.deinit(allocator);
 
     try std.testing.expectError(
@@ -358,7 +400,7 @@ test "Archetype stores the entity passed to addEntity" {
 
     const Value = struct { value: u64 };
 
-    var archetype = try Archetype.init(allocator, &.{Value}, null);
+    var archetype = try Archetype.init(allocator, &.{Value}, null, noOpLifecycleFunctionsFor);
     defer archetype.deinit(allocator);
 
     const first = Entity{ .id = 3, .generation = 1 };
@@ -397,7 +439,7 @@ test "Archetype.deinit deinits resources owned by stored components" {
         }
     };
 
-    var archetype = try Archetype.init(allocator, &.{ OwningComponent, NonOwningComponent }, null);
+    var archetype = try Archetype.init(allocator, &.{ OwningComponent, NonOwningComponent }, null, noOpLifecycleFunctionsFor);
 
     const owning = try OwningComponent.init(allocator);
     const non_owning = NonOwningComponent{ .value = 1 };
@@ -417,7 +459,7 @@ test "removeEntity returns null and does not relocate anything when removing the
 
     const Value = struct { value: u64 };
 
-    var archetype = try Archetype.init(allocator, &.{Value}, null);
+    var archetype = try Archetype.init(allocator, &.{Value}, null, noOpLifecycleFunctionsFor);
     defer archetype.deinit(allocator);
 
     const first = Entity{ .id = 1, .generation = 0 };
@@ -441,7 +483,7 @@ test "removeEntity is a no-op when entity_index is out of bounds" {
 
     const Value = struct { value: u64 };
 
-    var archetype = try Archetype.init(allocator, &.{Value}, null);
+    var archetype = try Archetype.init(allocator, &.{Value}, null, noOpLifecycleFunctionsFor);
     defer archetype.deinit(allocator);
 
     try std.testing.expectEqual(null, archetype.removeEntity(0, allocator));
@@ -462,7 +504,7 @@ test "removeEntity swaps the last entity into the removed slot and returns it as
 
     const Value = struct { value: u64 };
 
-    var archetype = try Archetype.init(allocator, &.{Value}, null);
+    var archetype = try Archetype.init(allocator, &.{Value}, null, noOpLifecycleFunctionsFor);
     defer archetype.deinit(allocator);
 
     const first = Entity{ .id = 1, .generation = 0 };
@@ -509,7 +551,7 @@ test "removeEntity deinits resources owned by the removed entity's components" {
         }
     };
 
-    var archetype = try Archetype.init(allocator, &.{ OwningComponent, NonOwningComponent }, null);
+    var archetype = try Archetype.init(allocator, &.{ OwningComponent, NonOwningComponent }, null, noOpLifecycleFunctionsFor);
     defer archetype.deinit(allocator);
 
     const owning = try OwningComponent.init(allocator);
@@ -531,7 +573,7 @@ test "Archetype grows its arrays when it runs out of capacity" {
 
     const Value = struct { value: u64 };
 
-    var archetype = try Archetype.init(allocator, &.{Value}, null);
+    var archetype = try Archetype.init(allocator, &.{Value}, null, noOpLifecycleFunctionsFor);
     defer archetype.deinit(allocator);
 
     const count = preallocated_entities_count + 1;
@@ -558,7 +600,7 @@ test "getComponents returns pointers to an entity's requested components" {
     const Position = struct { x: f32, y: f32 };
     const Velocity = struct { dx: f32, dy: f32 };
 
-    var archetype = try Archetype.init(allocator, &.{ Position, Velocity }, null);
+    var archetype = try Archetype.init(allocator, &.{ Position, Velocity }, null, noOpLifecycleFunctionsFor);
     defer archetype.deinit(allocator);
 
     const entity_index = try archetype.addEntity(
@@ -587,7 +629,7 @@ test "getComponents returns Error.UnknownComponent for a type the archetype does
     const Position = struct { x: f32, y: f32 };
     const Velocity = struct { dx: f32, dy: f32 };
 
-    var archetype = try Archetype.init(allocator, &.{Position}, null);
+    var archetype = try Archetype.init(allocator, &.{Position}, null, noOpLifecycleFunctionsFor);
     defer archetype.deinit(allocator);
 
     const entity_index = try archetype.addEntity(
@@ -607,7 +649,7 @@ test "getComponents returns Error.InvalidEntityIndex when entity_index is out of
 
     const Position = struct { x: f32, y: f32 };
 
-    var archetype = try Archetype.init(allocator, &.{Position}, null);
+    var archetype = try Archetype.init(allocator, &.{Position}, null, noOpLifecycleFunctionsFor);
     defer archetype.deinit(allocator);
 
     try std.testing.expectError(Error.InvalidEntityIndex, archetype.getComponents(0, &.{Position}));
@@ -627,7 +669,7 @@ test "getComponents returns the correct entity's data when entity_index is not z
     const Position = struct { x: f32, y: f32 };
     const Velocity = struct { dx: f32, dy: f32 };
 
-    var archetype = try Archetype.init(allocator, &.{ Position, Velocity }, null);
+    var archetype = try Archetype.init(allocator, &.{ Position, Velocity }, null, noOpLifecycleFunctionsFor);
     defer archetype.deinit(allocator);
 
     _ = try archetype.addEntity(
@@ -667,7 +709,7 @@ test "hasComponents returns true when the archetype has every requested componen
     const Position = struct { x: f32, y: f32 };
     const Velocity = struct { dx: f32, dy: f32 };
 
-    var archetype = try Archetype.init(allocator, &.{ Position, Velocity }, null);
+    var archetype = try Archetype.init(allocator, &.{ Position, Velocity }, null, noOpLifecycleFunctionsFor);
     defer archetype.deinit(allocator);
 
     try std.testing.expect(archetype.hasComponents(&.{ Position, Velocity }));
@@ -680,7 +722,7 @@ test "hasComponents returns true for a subset of the archetype's components" {
     const Velocity = struct { dx: f32, dy: f32 };
     const Health = struct { value: u32 };
 
-    var archetype = try Archetype.init(allocator, &.{ Position, Velocity, Health }, null);
+    var archetype = try Archetype.init(allocator, &.{ Position, Velocity, Health }, null, noOpLifecycleFunctionsFor);
     defer archetype.deinit(allocator);
 
     try std.testing.expect(archetype.hasComponents(&.{Position}));
@@ -692,7 +734,7 @@ test "hasComponents returns false when a requested component is missing" {
     const Position = struct { x: f32, y: f32 };
     const Velocity = struct { dx: f32, dy: f32 };
 
-    var archetype = try Archetype.init(allocator, &.{Position}, null);
+    var archetype = try Archetype.init(allocator, &.{Position}, null, noOpLifecycleFunctionsFor);
     defer archetype.deinit(allocator);
 
     try std.testing.expect(!archetype.hasComponents(&.{ Position, Velocity }));
@@ -703,7 +745,7 @@ test "Archetype.init reserves capacity up front when given one" {
 
     const Value = struct { value: u64 };
 
-    var archetype = try Archetype.init(allocator, &.{Value}, 100);
+    var archetype = try Archetype.init(allocator, &.{Value}, 100, noOpLifecycleFunctionsFor);
     defer archetype.deinit(allocator);
 
     try std.testing.expect(archetype.entities.len >= 100);
@@ -715,7 +757,7 @@ test "ensureTotalCapacity grows the arrays to at least the requested capacity" {
 
     const Value = struct { value: u64 };
 
-    var archetype = try Archetype.init(allocator, &.{Value}, null);
+    var archetype = try Archetype.init(allocator, &.{Value}, null, noOpLifecycleFunctionsFor);
     defer archetype.deinit(allocator);
 
     archetype.ensureTotalCapacity(allocator, 100);
@@ -729,7 +771,7 @@ test "ensureTotalCapacity does nothing when capacity is already sufficient" {
 
     const Value = struct { value: u64 };
 
-    var archetype = try Archetype.init(allocator, &.{Value}, null);
+    var archetype = try Archetype.init(allocator, &.{Value}, null, noOpLifecycleFunctionsFor);
     defer archetype.deinit(allocator);
 
     const capacity_before = archetype.entities.len;
