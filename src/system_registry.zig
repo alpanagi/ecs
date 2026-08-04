@@ -39,6 +39,17 @@ pub const ObserverEntry = union(enum) {
     }
 };
 
+pub const GroupIterator = struct {
+    groups: []const std.ArrayList(SystemEntry),
+    index: usize = 0,
+
+    pub fn next(self: *GroupIterator) ?[]const SystemEntry {
+        if (self.index >= self.groups.len) return null;
+        defer self.index += 1;
+        return self.groups[self.index].items;
+    }
+};
+
 pub const SystemRegistry = struct {
     groups: std.AutoArrayHashMapUnmanaged(u64, std.ArrayList(SystemEntry)) = .{},
     observers: std.AutoArrayHashMapUnmanaged(u64, std.ArrayList(ObserverEntry)) = .{},
@@ -77,13 +88,13 @@ pub const SystemRegistry = struct {
         try self.one_shot_systems.append(allocator, entry);
     }
 
-    pub fn runSystems(self: *SystemRegistry, allocator: std.mem.Allocator, world: *World) void {
+    pub fn runOneShotSystems(self: *SystemRegistry, allocator: std.mem.Allocator, world: *World) void {
         for (self.one_shot_systems.items) |entry| entry.run(allocator, world);
         self.one_shot_systems.clearRetainingCapacity();
+    }
 
-        for (self.groups.values()) |group| {
-            for (group.items) |entry| entry.run(allocator, world);
-        }
+    pub fn groupIterator(self: *const SystemRegistry) GroupIterator {
+        return .{ .groups = self.groups.values() };
     }
 
     pub fn registerObserver(
@@ -293,7 +304,7 @@ test "registerSystem appends to an existing group in call order" {
     try world.system_registry.registerSystem(std.testing.allocator, 1, a, null);
     try world.system_registry.registerSystem(std.testing.allocator, 1, b, null);
 
-    world.system_registry.runSystems(std.testing.allocator, &world);
+    try world.runSystems(std.testing.allocator);
     try std.testing.expectEqualSlices(u8, &.{ 1, 2 }, &State.calls);
 }
 
@@ -311,7 +322,7 @@ test "registerSystem binds the plugin pointer when provided" {
     var plugin = Plugin{};
     try world.system_registry.registerSystem(std.testing.allocator, 1, Plugin.update, &plugin);
 
-    world.system_registry.runSystems(std.testing.allocator, &world);
+    try world.runSystems(std.testing.allocator);
     try std.testing.expectEqual(1, plugin.calls);
 }
 
@@ -362,14 +373,14 @@ test "runSystems runs systems group by group, in registration order" {
     try world.system_registry.registerSystem(std.testing.allocator, 1, b, null);
     try world.system_registry.registerSystem(std.testing.allocator, 2, c, null);
 
-    world.system_registry.runSystems(std.testing.allocator, &world);
+    try world.runSystems(std.testing.allocator);
     try std.testing.expectEqualSlices(u8, &.{ 1, 3, 2 }, &State.calls);
 }
 
 test "runSystems is a no-op when nothing is registered" {
     var world = World.init();
     defer world.deinit(std.testing.allocator);
-    world.system_registry.runSystems(std.testing.allocator, &world);
+    try world.runSystems(std.testing.allocator);
 }
 
 test "dispatch runs a registered observer with the triggered event's data" {
@@ -508,7 +519,7 @@ test "runSystems runs registered one-shot systems in registration order" {
     try world.system_registry.registerOneShotSystem(std.testing.allocator, a, null);
     try world.system_registry.registerOneShotSystem(std.testing.allocator, b, null);
 
-    world.system_registry.runSystems(std.testing.allocator, &world);
+    try world.runSystems(std.testing.allocator);
 
     try std.testing.expectEqualSlices(u8, &.{ 1, 2 }, &State.calls);
 }
@@ -527,7 +538,7 @@ test "runSystems binds the plugin pointer for a one-shot system when provided" {
     var plugin = Plugin{};
     try world.system_registry.registerOneShotSystem(std.testing.allocator, Plugin.tick, &plugin);
 
-    world.system_registry.runSystems(std.testing.allocator, &world);
+    try world.runSystems(std.testing.allocator);
 
     try std.testing.expectEqual(1, plugin.calls);
 }
@@ -546,8 +557,8 @@ test "runSystems clears one-shot systems so they do not run again" {
     defer world.deinit(std.testing.allocator);
     try world.system_registry.registerOneShotSystem(std.testing.allocator, system, null);
 
-    world.system_registry.runSystems(std.testing.allocator, &world);
-    world.system_registry.runSystems(std.testing.allocator, &world);
+    try world.runSystems(std.testing.allocator);
+    try world.runSystems(std.testing.allocator);
 
     try std.testing.expectEqual(1, State.calls);
     try std.testing.expectEqual(0, world.system_registry.one_shot_systems.items.len);

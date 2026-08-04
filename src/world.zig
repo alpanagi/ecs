@@ -11,6 +11,8 @@ const PluginRegistry = @import("plugin_registry.zig").PluginRegistry;
 const SystemRegistry = @import("system_registry.zig").SystemRegistry;
 const SystemEntry = @import("system_registry.zig").SystemEntry;
 const ResourceRegistry = @import("resource_registry.zig").ResourceRegistry;
+const CommandQueue = @import("command_queue.zig").CommandQueue;
+const SpawnFunctions = @import("command_queue.zig").SpawnFunctions;
 
 pub const World = struct {
     archetypes: std.ArrayList(Archetype),
@@ -24,6 +26,7 @@ pub const World = struct {
     system_registry: SystemRegistry,
     plugin_registry: PluginRegistry,
     resource_registry: ResourceRegistry,
+    command_queue: CommandQueue,
 
     pub fn init() World {
         return .{
@@ -35,6 +38,7 @@ pub const World = struct {
             .system_registry = SystemRegistry.init(),
             .plugin_registry = PluginRegistry.init(),
             .resource_registry = ResourceRegistry.init(),
+            .command_queue = CommandQueue.init(),
         };
     }
 
@@ -49,9 +53,10 @@ pub const World = struct {
         self.system_registry.deinit(allocator);
         self.plugin_registry.deinit(allocator);
         self.resource_registry.deinit(allocator);
+        self.command_queue.deinit(allocator);
     }
 
-    pub fn addEntity(self: *World, allocator: std.mem.Allocator, components: anytype) !Entity {
+    fn addEntity(self: *World, allocator: std.mem.Allocator, components: anytype) !Entity {
         const fields = std.meta.fields(@TypeOf(components));
 
         const component_types: [fields.len]type = comptime blk: {
@@ -80,7 +85,7 @@ pub const World = struct {
         return entity;
     }
 
-    pub fn removeEntity(self: *World, allocator: std.mem.Allocator, entity: Entity) !void {
+    fn removeEntity(self: *World, allocator: std.mem.Allocator, entity: Entity) !void {
         if (entity.id >= self.entity_generations.items.len) return;
         if (self.entity_generations.items[entity.id] != entity.generation) return;
 
@@ -102,6 +107,14 @@ pub const World = struct {
         return .{};
     }
 
+    pub fn spawn(self: *World, allocator: std.mem.Allocator, components: anytype) !void {
+        try self.command_queue.spawn(allocator, components, spawnFunctions(@TypeOf(components)));
+    }
+
+    pub fn despawn(self: *World, allocator: std.mem.Allocator, entity: Entity) !void {
+        try self.command_queue.despawn(allocator, entity, World.removeEntity);
+    }
+
     pub fn addSystem(
         self: *World,
         allocator: std.mem.Allocator,
@@ -112,8 +125,15 @@ pub const World = struct {
         try self.system_registry.registerSystem(allocator, hashBytes(group), function, plugin);
     }
 
-    pub fn runSystems(self: *World, allocator: std.mem.Allocator) void {
-        self.system_registry.runSystems(allocator, self);
+    pub fn runSystems(self: *World, allocator: std.mem.Allocator) !void {
+        self.system_registry.runOneShotSystems(allocator, self);
+        try self.command_queue.flush(allocator, self);
+
+        var groups = self.system_registry.groupIterator();
+        while (groups.next()) |group| {
+            for (group) |entry| entry.run(allocator, self);
+            try self.command_queue.flush(allocator, self);
+        }
     }
 
     pub fn addOneShotSystem(
@@ -196,6 +216,23 @@ pub const World = struct {
         return @intCast(self.entity_generations.items.len - 1);
     }
 };
+
+fn spawnFunctions(comptime Components: type) SpawnFunctions {
+    return .{
+        .apply = struct {
+            fn call(data: *anyopaque, world: *World, allocator: std.mem.Allocator) !void {
+                const typed: *Components = @ptrCast(@alignCast(data));
+                _ = try world.addEntity(allocator, typed.*);
+            }
+        }.call,
+        .destroy = struct {
+            fn call(data: *anyopaque, allocator: std.mem.Allocator) void {
+                const typed: *Components = @ptrCast(@alignCast(data));
+                allocator.destroy(typed);
+            }
+        }.call,
+    };
+}
 
 pub fn Query(comptime components: []const type) type {
     return struct {
@@ -620,7 +657,7 @@ test "addSystem then runSystems runs the system" {
 
     try world.addSystem(std.testing.allocator, "physics", system, null);
 
-    world.runSystems(std.testing.allocator);
+    try world.runSystems(std.testing.allocator);
     try std.testing.expect(State.called);
 }
 
@@ -648,7 +685,7 @@ test "addSystem groups systems by the same group name in call order" {
     try world.addSystem(std.testing.allocator, "physics", a, null);
     try world.addSystem(std.testing.allocator, "physics", b, null);
 
-    world.runSystems(std.testing.allocator);
+    try world.runSystems(std.testing.allocator);
     try std.testing.expectEqualSlices(u8, &.{ 1, 2 }, &State.calls);
 }
 
@@ -695,7 +732,7 @@ test "a plugin's build can register systems" {
 
     try world.addPlugin(std.testing.allocator, Plugin);
 
-    world.runSystems(std.testing.allocator);
+    try world.runSystems(std.testing.allocator);
     const entry: SystemEntry = world.system_registry.groups.values()[0].items[0];
     const plugin: *Plugin = @ptrCast(@alignCast(entry.plugin_function.plugin));
     try std.testing.expectEqual(1, plugin.calls);
@@ -746,8 +783,8 @@ test "plugin systems share state across runs" {
     defer world.deinit(std.testing.allocator);
     try world.addPlugin(std.testing.allocator, Plugin);
 
-    world.runSystems(std.testing.allocator);
-    world.runSystems(std.testing.allocator);
+    try world.runSystems(std.testing.allocator);
+    try world.runSystems(std.testing.allocator);
 
     const first_entry = world.system_registry.groups.values()[0].items[0].plugin_function;
     const plugin: *Plugin = @ptrCast(@alignCast(first_entry.plugin));
@@ -781,7 +818,7 @@ test "systems registered before a plugin build failure remain valid" {
         error.Boom,
         world.addPlugin(std.testing.allocator, Plugin),
     );
-    world.runSystems(std.testing.allocator);
+    try world.runSystems(std.testing.allocator);
     const entry = world.system_registry.groups.values()[0].items[0];
     const plugin: *Plugin = @ptrCast(@alignCast(entry.plugin_function.plugin));
     try std.testing.expectEqual(1, plugin.calls);
@@ -846,8 +883,8 @@ test "World.runSystems runs a one-shot system registered through World.addOneSho
     defer world.deinit(std.testing.allocator);
 
     try world.addOneShotSystem(std.testing.allocator, system, null);
-    world.runSystems(std.testing.allocator);
-    world.runSystems(std.testing.allocator);
+    try world.runSystems(std.testing.allocator);
+    try world.runSystems(std.testing.allocator);
 
     try std.testing.expectEqual(1, State.calls);
 }
@@ -869,7 +906,7 @@ test "a plugin's build can register a one-shot system through World.addOneShotSy
     defer world.deinit(std.testing.allocator);
 
     try world.addPlugin(std.testing.allocator, Plugin);
-    world.runSystems(std.testing.allocator);
+    try world.runSystems(std.testing.allocator);
 
     const plugin: *Plugin = @ptrCast(@alignCast(world.plugin_registry.plugins.items[0].plugin));
     try std.testing.expectEqual(1, plugin.calls);
@@ -925,9 +962,62 @@ test "a plugin's build can register a resource, read later by a system" {
     defer world.deinit(std.testing.allocator);
 
     try world.addPlugin(std.testing.allocator, ConfigPlugin);
-    world.runSystems(std.testing.allocator);
-    world.runSystems(std.testing.allocator);
+    try world.runSystems(std.testing.allocator);
+    try world.runSystems(std.testing.allocator);
 
     const color = world.getResource(ClearColor).?;
     try std.testing.expectApproxEqAbs(@as(f32, 0.8), color.r, 0.0001);
+}
+
+test "World.spawn defers entity creation until the command queue is flushed" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try world.spawn(allocator, .{Position{ .x = 1, .y = 2 }});
+    try std.testing.expectEqual(0, world.archetypes.items.len);
+
+    try world.command_queue.flush(allocator, &world);
+
+    try std.testing.expectEqual(1, world.archetypes.items.len);
+}
+
+test "World.despawn defers entity removal until the command queue is flushed" {
+    const allocator = std.testing.allocator;
+
+    const Value = struct { value: u64 };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    const entity = try world.addEntity(allocator, .{Value{ .value = 1 }});
+
+    try world.despawn(allocator, entity);
+    try std.testing.expectEqual(0, world.entity_free_list.items.len);
+
+    try world.command_queue.flush(allocator, &world);
+
+    try std.testing.expectEqual(1, world.entity_free_list.items.len);
+}
+
+test "World.runSystems flushes commands queued by a system after each group" {
+    const Position = struct { x: f32, y: f32 };
+
+    const system = struct {
+        fn call(world: *World, allocator: *const std.mem.Allocator) callconv(.c) void {
+            world.spawn(allocator.*, .{Position{ .x = 1, .y = 2 }}) catch unreachable;
+        }
+    }.call;
+
+    var world = World.init();
+    defer world.deinit(std.testing.allocator);
+
+    try world.addSystem(std.testing.allocator, "spawn", system, null);
+    try world.runSystems(std.testing.allocator);
+
+    try std.testing.expectEqual(1, world.archetypes.items.len);
+    try std.testing.expectEqual(1, world.archetypes.items[0].entity_count);
 }
