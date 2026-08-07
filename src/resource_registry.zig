@@ -17,7 +17,7 @@ pub const ResourceRegistry = struct {
     }
 
     pub fn deinit(self: *ResourceRegistry, allocator: std.mem.Allocator) void {
-        for (self.resources.values()) |entry| entry.deinit(entry.value, &allocator);
+        for (self.resources.values()) |entry| entry.deinit(entry.value, allocator);
         self.resources.deinit(allocator);
     }
 
@@ -32,7 +32,7 @@ pub const ResourceRegistry = struct {
         resource.* = value;
 
         const gop = try self.resources.getOrPut(allocator, hash(T));
-        if (gop.found_existing) gop.value_ptr.deinit(gop.value_ptr.value, &allocator);
+        if (gop.found_existing) gop.value_ptr.deinit(gop.value_ptr.value, allocator);
         gop.value_ptr.* = .{ .value = resource, .deinit = getDeinitFunction(T) };
     }
 
@@ -47,7 +47,7 @@ pub const ResourceRegistry = struct {
         comptime T: type,
     ) void {
         if (self.resources.fetchOrderedRemove(hash(T))) |removed| {
-            removed.value.deinit(removed.value.value, &allocator);
+            removed.value.deinit(removed.value.value, allocator);
         }
     }
 };

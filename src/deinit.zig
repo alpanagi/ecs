@@ -1,12 +1,12 @@
 const std = @import("std");
 
-pub const DeinitFunction = *const fn (*anyopaque, *const std.mem.Allocator) callconv(.c) void;
+pub const DeinitFunction = *const fn (*anyopaque, std.mem.Allocator) void;
 
 pub fn getDeinitFunction(comptime T: type) DeinitFunction {
     return struct {
-        fn deinitFunction(ptr: *anyopaque, allocator: *const std.mem.Allocator) callconv(.c) void {
+        fn deinitFunction(ptr: *anyopaque, allocator: std.mem.Allocator) void {
             const instance: *T = @ptrCast(@alignCast(ptr));
-            deinitIfPresent(T, instance, allocator.*);
+            deinitIfPresent(T, instance, allocator);
             allocator.destroy(instance);
         }
     }.deinitFunction;
@@ -37,7 +37,7 @@ test "getDeinitFunction calls a two-argument deinit and frees the instance" {
     instance.* = .{};
 
     const deinit_function = getDeinitFunction(Type);
-    deinit_function(instance, &allocator);
+    deinit_function(instance, allocator);
 
     try std.testing.expectEqual(1, State.count);
 }
@@ -57,7 +57,7 @@ test "getDeinitFunction calls a one-argument deinit and frees the instance" {
     instance.* = .{};
 
     const deinit_function = getDeinitFunction(Type);
-    deinit_function(instance, &allocator);
+    deinit_function(instance, allocator);
 
     try std.testing.expectEqual(1, State.count);
 }
@@ -70,5 +70,5 @@ test "getDeinitFunction just frees the instance when deinit is absent" {
     instance.* = .{};
 
     const deinit_function = getDeinitFunction(Type);
-    deinit_function(instance, &allocator);
+    deinit_function(instance, allocator);
 }

@@ -3,11 +3,11 @@ const std = @import("std");
 const World = @import("world.zig").World;
 const hash = @import("hash.zig").hash;
 
-pub const SystemFunction = *const fn (*World, *const std.mem.Allocator) callconv(.c) void;
-pub const ObserverFunction = *const fn (*World, *const std.mem.Allocator, *const anyopaque) callconv(.c) void;
+pub const SystemFunction = *const fn (*World, std.mem.Allocator) anyerror!void;
+pub const ObserverFunction = *const fn (*World, std.mem.Allocator, *const anyopaque) anyerror!void;
 
-pub const PluginSystemFunction = *const fn (*anyopaque, *const std.mem.Allocator, *World) callconv(.c) void;
-pub const PluginObserverFunction = *const fn (*anyopaque, *const std.mem.Allocator, *World, *const anyopaque) callconv(.c) void;
+pub const PluginSystemFunction = *const fn (*anyopaque, std.mem.Allocator, *World) anyerror!void;
+pub const PluginObserverFunction = *const fn (*anyopaque, std.mem.Allocator, *World, *const anyopaque) anyerror!void;
 
 pub const SystemEntry = union(enum) {
     function: SystemFunction,
@@ -16,10 +16,10 @@ pub const SystemEntry = union(enum) {
         function: PluginSystemFunction,
     },
 
-    pub fn run(self: SystemEntry, allocator: std.mem.Allocator, world: *World) void {
+    pub fn run(self: SystemEntry, allocator: std.mem.Allocator, world: *World) !void {
         switch (self) {
-            .function => |function| function(world, &allocator),
-            .plugin_function => |system| system.function(system.plugin, &allocator, world),
+            .function => |function| try function(world, allocator),
+            .plugin_function => |system| try system.function(system.plugin, allocator, world),
         }
     }
 };
@@ -31,10 +31,10 @@ pub const ObserverEntry = union(enum) {
         function: PluginObserverFunction,
     },
 
-    pub fn run(self: ObserverEntry, allocator: std.mem.Allocator, world: *World, event: *const anyopaque) void {
+    pub fn run(self: ObserverEntry, allocator: std.mem.Allocator, world: *World, event: *const anyopaque) !void {
         switch (self) {
-            .function => |function| function(world, &allocator, event),
-            .plugin_function => |observer| observer.function(observer.plugin, &allocator, world, event),
+            .function => |function| try function(world, allocator, event),
+            .plugin_function => |observer| try observer.function(observer.plugin, allocator, world, event),
         }
     }
 };
@@ -89,7 +89,9 @@ pub const SystemRegistry = struct {
     }
 
     pub fn runOneShotSystems(self: *SystemRegistry, allocator: std.mem.Allocator, world: *World) void {
-        for (self.one_shot_systems.items) |entry| entry.run(allocator, world);
+        for (self.one_shot_systems.items) |entry| {
+            entry.run(allocator, world) catch |err| std.log.err("system failed: {}\n", .{err});
+        }
         self.one_shot_systems.clearRetainingCapacity();
     }
 
@@ -110,10 +112,9 @@ pub const SystemRegistry = struct {
             const info = functionInfo(@TypeOf(function));
             if (info.params.len != 3 or
                 info.params[0].type.? != *World or
-                info.params[1].type.? != *const std.mem.Allocator or
-                info.return_type.? != void)
+                info.params[1].type.? != std.mem.Allocator)
             {
-                @compileError("an observer without a plugin must have signature fn (*World, *const std.mem.Allocator, *const EventType) void");
+                @compileError("an observer without a plugin must have signature fn (*World, std.mem.Allocator, *const EventType) void or !void");
             }
             const EventType = eventType(info.params[2].type.?);
             event = hash(EventType);
@@ -123,11 +124,10 @@ pub const SystemRegistry = struct {
             const info = functionInfo(@TypeOf(function));
             if (info.params.len != 4 or
                 info.params[0].type.? != *Plugin or
-                info.params[1].type.? != *const std.mem.Allocator or
-                info.params[2].type.? != *World or
-                info.return_type.? != void)
+                info.params[1].type.? != std.mem.Allocator or
+                info.params[2].type.? != *World)
             {
-                @compileError("a plugin observer must have signature fn (*Plugin, *const std.mem.Allocator, *World, *const EventType) void");
+                @compileError("a plugin observer must have signature fn (*Plugin, std.mem.Allocator, *World, *const EventType) void or !void");
             }
             const EventType = eventType(info.params[3].type.?);
             event = hash(EventType);
@@ -149,7 +149,9 @@ pub const SystemRegistry = struct {
         payload: *const anyopaque,
     ) void {
         if (self.observers.get(event)) |entries| {
-            for (entries.items) |entry| entry.run(allocator, world, payload);
+            for (entries.items) |entry| {
+                entry.run(allocator, world, payload) catch |err| std.log.err("observer failed: {}\n", .{err});
+            }
         }
     }
 };
@@ -177,13 +179,17 @@ fn buildSystemEntry(comptime function: anytype, plugin: anytype) SystemEntry {
         const info = functionInfo(@TypeOf(function));
         if (info.params.len != 2 or
             info.params[0].type.? != *World or
-            info.params[1].type.? != *const std.mem.Allocator or
-            info.return_type.? != void)
+            info.params[1].type.? != std.mem.Allocator)
         {
-            @compileError("a system without a plugin must have signature fn (*World, *const std.mem.Allocator) void");
+            @compileError("a system without a plugin must have signature fn (*World, std.mem.Allocator) void or !void");
         }
-        const system_function: SystemFunction = function;
-        return .{ .function = system_function };
+        switch (@typeInfo(info.return_type.?)) {
+            .error_union => {
+                const system_function: SystemFunction = function;
+                return .{ .function = system_function };
+            },
+            else => return .{ .function = systemInvoker(function) },
+        }
     } else {
         const Plugin = pluginType(@TypeOf(plugin));
         validatePluginFunction(Plugin, @TypeOf(function));
@@ -210,11 +216,10 @@ fn validatePluginFunction(comptime Plugin: type, comptime Function: type) void {
     const info = functionInfo(Function);
     if (info.params.len != 3 or
         info.params[0].type.? != *Plugin or
-        info.params[1].type.? != *const std.mem.Allocator or
-        info.params[2].type.? != *World or
-        info.return_type.? != void)
+        info.params[1].type.? != std.mem.Allocator or
+        info.params[2].type.? != *World)
     {
-        @compileError("a plugin system must have signature fn (*Plugin, *const std.mem.Allocator, *World) void");
+        @compileError("a plugin system must have signature fn (*Plugin, std.mem.Allocator, *World) void or !void");
     }
 }
 
@@ -240,37 +245,45 @@ fn functionInfo(comptime F: type) std.builtin.Type.Fn {
     };
 }
 
+fn systemInvoker(comptime function: anytype) SystemFunction {
+    return struct {
+        fn call(world: *World, allocator: std.mem.Allocator) anyerror!void {
+            return function(world, allocator);
+        }
+    }.call;
+}
+
 fn pluginInvoker(comptime T: type, comptime function: anytype) PluginSystemFunction {
     return struct {
-        fn call(plugin: *anyopaque, allocator: *const std.mem.Allocator, world: *World) callconv(.c) void {
+        fn call(plugin: *anyopaque, allocator: std.mem.Allocator, world: *World) anyerror!void {
             const typed_plugin: *T = @ptrCast(@alignCast(plugin));
-            function(typed_plugin, allocator, world);
+            return function(typed_plugin, allocator, world);
         }
     }.call;
 }
 
 fn pluginObserverInvoker(comptime T: type, comptime EventType: type, comptime function: anytype) PluginObserverFunction {
     return struct {
-        fn call(plugin: *anyopaque, allocator: *const std.mem.Allocator, world: *World, event: *const anyopaque) callconv(.c) void {
+        fn call(plugin: *anyopaque, allocator: std.mem.Allocator, world: *World, event: *const anyopaque) anyerror!void {
             const typed_plugin: *T = @ptrCast(@alignCast(plugin));
             const typed_event: *const EventType = @ptrCast(@alignCast(event));
-            function(typed_plugin, allocator, world, typed_event);
+            return function(typed_plugin, allocator, world, typed_event);
         }
     }.call;
 }
 
 fn observerInvoker(comptime EventType: type, comptime function: anytype) ObserverFunction {
     return struct {
-        fn call(world: *World, allocator: *const std.mem.Allocator, event: *const anyopaque) callconv(.c) void {
+        fn call(world: *World, allocator: std.mem.Allocator, event: *const anyopaque) anyerror!void {
             const typed_event: *const EventType = @ptrCast(@alignCast(event));
-            function(world, allocator, typed_event);
+            return function(world, allocator, typed_event);
         }
     }.call;
 }
 
 test "registerSystem creates a group on first use" {
     const system = struct {
-        fn call(_: *World, _: *const std.mem.Allocator) callconv(.c) void {}
+        fn call(_: *World, _: std.mem.Allocator) void {}
     }.call;
 
     var registry = SystemRegistry.init();
@@ -287,13 +300,13 @@ test "registerSystem appends to an existing group in call order" {
         var count: usize = 0;
     };
     const a = struct {
-        fn call(_: *World, _: *const std.mem.Allocator) callconv(.c) void {
+        fn call(_: *World, _: std.mem.Allocator) !void {
             State.calls[State.count] = 1;
             State.count += 1;
         }
     }.call;
     const b = struct {
-        fn call(_: *World, _: *const std.mem.Allocator) callconv(.c) void {
+        fn call(_: *World, _: std.mem.Allocator) !void {
             State.calls[State.count] = 2;
             State.count += 1;
         }
@@ -312,7 +325,7 @@ test "registerSystem binds the plugin pointer when provided" {
     const Plugin = struct {
         calls: usize = 0,
 
-        fn update(self: *@This(), _: *const std.mem.Allocator, _: *World) void {
+        fn update(self: *@This(), _: std.mem.Allocator, _: *World) void {
             self.calls += 1;
         }
     };
@@ -328,10 +341,10 @@ test "registerSystem binds the plugin pointer when provided" {
 
 test "registerSystem preserves group order by first registration" {
     const a = struct {
-        fn call(_: *World, _: *const std.mem.Allocator) callconv(.c) void {}
+        fn call(_: *World, _: std.mem.Allocator) !void {}
     }.call;
     const b = struct {
-        fn call(_: *World, _: *const std.mem.Allocator) callconv(.c) void {}
+        fn call(_: *World, _: std.mem.Allocator) !void {}
     }.call;
 
     var registry = SystemRegistry.init();
@@ -349,19 +362,19 @@ test "runSystems runs systems group by group, in registration order" {
         var count: usize = 0;
     };
     const a = struct {
-        fn call(_: *World, _: *const std.mem.Allocator) callconv(.c) void {
+        fn call(_: *World, _: std.mem.Allocator) !void {
             State.calls[State.count] = 1;
             State.count += 1;
         }
     }.call;
     const b = struct {
-        fn call(_: *World, _: *const std.mem.Allocator) callconv(.c) void {
+        fn call(_: *World, _: std.mem.Allocator) !void {
             State.calls[State.count] = 2;
             State.count += 1;
         }
     }.call;
     const c = struct {
-        fn call(_: *World, _: *const std.mem.Allocator) callconv(.c) void {
+        fn call(_: *World, _: std.mem.Allocator) !void {
             State.calls[State.count] = 3;
             State.count += 1;
         }
@@ -389,7 +402,7 @@ test "dispatch runs a registered observer with the triggered event's data" {
         var seen: u32 = 0;
     };
     const observer = struct {
-        fn call(_: *World, _: *const std.mem.Allocator, event: *const Damage) callconv(.c) void {
+        fn call(_: *World, _: std.mem.Allocator, event: *const Damage) void {
             State.seen = event.amount;
         }
     }.call;
@@ -409,7 +422,7 @@ test "dispatch binds the plugin pointer when provided" {
     const Plugin = struct {
         total: u32 = 0,
 
-        fn onDamage(self: *@This(), _: *const std.mem.Allocator, _: *World, event: *const Damage) void {
+        fn onDamage(self: *@This(), _: std.mem.Allocator, _: *World, event: *const Damage) void {
             self.total += event.amount;
         }
     };
@@ -432,13 +445,13 @@ test "dispatch runs observers for the same event type in registration order" {
         var count: usize = 0;
     };
     const a = struct {
-        fn call(_: *World, _: *const std.mem.Allocator, _: *const Damage) callconv(.c) void {
+        fn call(_: *World, _: std.mem.Allocator, _: *const Damage) !void {
             State.calls[State.count] = 1;
             State.count += 1;
         }
     }.call;
     const b = struct {
-        fn call(_: *World, _: *const std.mem.Allocator, _: *const Damage) callconv(.c) void {
+        fn call(_: *World, _: std.mem.Allocator, _: *const Damage) !void {
             State.calls[State.count] = 2;
             State.count += 1;
         }
@@ -461,7 +474,7 @@ test "dispatch does not run observers registered for a different event type" {
         var damage_calls: usize = 0;
     };
     const onDamage = struct {
-        fn call(_: *World, _: *const std.mem.Allocator, _: *const Damage) callconv(.c) void {
+        fn call(_: *World, _: std.mem.Allocator, _: *const Damage) !void {
             State.damage_calls += 1;
         }
     }.call;
@@ -486,7 +499,7 @@ test "dispatch is a no-op when nothing is registered for the event" {
 
 test "registerOneShotSystem appends to one_shot_systems" {
     const system = struct {
-        fn call(_: *World, _: *const std.mem.Allocator) callconv(.c) void {}
+        fn call(_: *World, _: std.mem.Allocator) !void {}
     }.call;
 
     var world = World.init();
@@ -502,13 +515,13 @@ test "runSystems runs registered one-shot systems in registration order" {
         var count: usize = 0;
     };
     const a = struct {
-        fn call(_: *World, _: *const std.mem.Allocator) callconv(.c) void {
+        fn call(_: *World, _: std.mem.Allocator) !void {
             State.calls[State.count] = 1;
             State.count += 1;
         }
     }.call;
     const b = struct {
-        fn call(_: *World, _: *const std.mem.Allocator) callconv(.c) void {
+        fn call(_: *World, _: std.mem.Allocator) !void {
             State.calls[State.count] = 2;
             State.count += 1;
         }
@@ -528,7 +541,7 @@ test "runSystems binds the plugin pointer for a one-shot system when provided" {
     const Plugin = struct {
         calls: usize = 0,
 
-        fn tick(self: *@This(), _: *const std.mem.Allocator, _: *World) void {
+        fn tick(self: *@This(), _: std.mem.Allocator, _: *World) !void {
             self.calls += 1;
         }
     };
@@ -548,7 +561,7 @@ test "runSystems clears one-shot systems so they do not run again" {
         var calls: usize = 0;
     };
     const system = struct {
-        fn call(_: *World, _: *const std.mem.Allocator) callconv(.c) void {
+        fn call(_: *World, _: std.mem.Allocator) !void {
             State.calls += 1;
         }
     }.call;

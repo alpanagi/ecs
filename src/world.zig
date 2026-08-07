@@ -158,7 +158,9 @@ pub const World = struct {
 
         var groups = self.system_registry.groupIterator();
         while (groups.next()) |group| {
-            for (group) |entry| entry.run(allocator, self);
+            for (group) |entry| {
+                entry.run(allocator, self) catch |err| std.log.err("system failed: {}\n", .{err});
+            }
             try self.command_queue.flush(allocator, self);
         }
     }
@@ -757,7 +759,7 @@ test "addSystem then runSystems runs the system" {
         var called = false;
     };
     const system = struct {
-        fn call(_: *World, _: *const std.mem.Allocator) callconv(.c) void {
+        fn call(_: *World, _: std.mem.Allocator) !void {
             State.called = true;
         }
     }.call;
@@ -777,13 +779,13 @@ test "addSystem groups systems by the same group name in call order" {
         var count: usize = 0;
     };
     const a = struct {
-        fn call(_: *World, _: *const std.mem.Allocator) callconv(.c) void {
+        fn call(_: *World, _: std.mem.Allocator) !void {
             State.calls[State.count] = 1;
             State.count += 1;
         }
     }.call;
     const b = struct {
-        fn call(_: *World, _: *const std.mem.Allocator) callconv(.c) void {
+        fn call(_: *World, _: std.mem.Allocator) !void {
             State.calls[State.count] = 2;
             State.count += 1;
         }
@@ -809,7 +811,7 @@ test "addPlugin runs the plugin's init immediately" {
             return .{};
         }
 
-        pub fn build(_: *@This(), _: *const std.mem.Allocator, _: *World) !void {}
+        pub fn build(_: *@This(), _: std.mem.Allocator, _: *World) !void {}
     };
 
     var world = World.init();
@@ -828,11 +830,11 @@ test "a plugin's build can register systems" {
             return .{};
         }
 
-        pub fn build(self: *@This(), allocator: *const std.mem.Allocator, world: *World) !void {
-            try world.addSystem(allocator.*, "update", system, self);
+        pub fn build(self: *@This(), allocator: std.mem.Allocator, world: *World) !void {
+            try world.addSystem(allocator, "update", system, self);
         }
 
-        fn system(self: *@This(), _: *const std.mem.Allocator, _: *World) void {
+        fn system(self: *@This(), _: std.mem.Allocator, _: *World) !void {
             self.calls += 1;
         }
     };
@@ -857,7 +859,7 @@ test "deinit calls a plugin's deinit" {
             return .{};
         }
 
-        pub fn build(_: *@This(), _: *const std.mem.Allocator, _: *World) !void {}
+        pub fn build(_: *@This(), _: std.mem.Allocator, _: *World) !void {}
 
         pub fn deinit(_: *@This(), _: std.mem.Allocator) void {
             State.count += 1;
@@ -879,12 +881,12 @@ test "plugin systems share state across runs" {
             return .{};
         }
 
-        pub fn build(self: *@This(), allocator: *const std.mem.Allocator, world: *World) !void {
-            try world.addSystem(allocator.*, "update", increment, self);
-            try world.addSystem(allocator.*, "observe", increment, self);
+        pub fn build(self: *@This(), allocator: std.mem.Allocator, world: *World) !void {
+            try world.addSystem(allocator, "update", increment, self);
+            try world.addSystem(allocator, "observe", increment, self);
         }
 
-        fn increment(self: *@This(), _: *const std.mem.Allocator, _: *World) void {
+        fn increment(self: *@This(), _: std.mem.Allocator, _: *World) !void {
             self.count += 1;
         }
     };
@@ -911,12 +913,12 @@ test "systems registered before a plugin build failure remain valid" {
             return .{};
         }
 
-        pub fn build(self: *@This(), allocator: *const std.mem.Allocator, world: *World) !void {
-            try world.addSystem(allocator.*, "update", update, self);
+        pub fn build(self: *@This(), allocator: std.mem.Allocator, world: *World) !void {
+            try world.addSystem(allocator, "update", update, self);
             return error.Boom;
         }
 
-        fn update(self: *@This(), _: *const std.mem.Allocator, _: *World) void {
+        fn update(self: *@This(), _: std.mem.Allocator, _: *World) !void {
             self.calls += 1;
         }
     };
@@ -940,7 +942,7 @@ test "World.trigger runs an observer registered through World.addObserver" {
         var seen: u32 = 0;
     };
     const onDamage = struct {
-        fn call(_: *World, _: *const std.mem.Allocator, event: *const Damage) callconv(.c) void {
+        fn call(_: *World, _: std.mem.Allocator, event: *const Damage) !void {
             State.seen = event.amount;
         }
     }.call;
@@ -959,11 +961,11 @@ test "a plugin's build can register an observer through World.addObserver" {
     const Plugin = struct {
         total: u32 = 0,
 
-        pub fn build(self: *@This(), allocator: *const std.mem.Allocator, world: *World) !void {
-            try world.addObserver(allocator.*, onDamage, self);
+        pub fn build(self: *@This(), allocator: std.mem.Allocator, world: *World) !void {
+            try world.addObserver(allocator, onDamage, self);
         }
 
-        fn onDamage(self: *@This(), _: *const std.mem.Allocator, _: *World, event: *const Damage) void {
+        fn onDamage(self: *@This(), _: std.mem.Allocator, _: *World, event: *const Damage) !void {
             self.total += event.amount;
         }
     };
@@ -984,7 +986,7 @@ test "World.runSystems runs a one-shot system registered through World.addOneSho
         var calls: usize = 0;
     };
     const system = struct {
-        fn call(_: *World, _: *const std.mem.Allocator) callconv(.c) void {
+        fn call(_: *World, _: std.mem.Allocator) !void {
             State.calls += 1;
         }
     }.call;
@@ -1003,11 +1005,11 @@ test "a plugin's build can register a one-shot system through World.addOneShotSy
     const Plugin = struct {
         calls: usize = 0,
 
-        pub fn build(self: *@This(), allocator: *const std.mem.Allocator, world: *World) !void {
-            try world.addOneShotSystem(allocator.*, tick, self);
+        pub fn build(self: *@This(), allocator: std.mem.Allocator, world: *World) !void {
+            try world.addOneShotSystem(allocator, tick, self);
         }
 
-        fn tick(self: *@This(), _: *const std.mem.Allocator, _: *World) void {
+        fn tick(self: *@This(), _: std.mem.Allocator, _: *World) !void {
             self.calls += 1;
         }
     };
@@ -1057,12 +1059,12 @@ test "World.removeResource removes it and calls its deinit" {
 test "a plugin's build can register a resource, read later by a system" {
     const ClearColor = struct { r: f32, g: f32, b: f32 };
     const ConfigPlugin = struct {
-        pub fn build(_: *@This(), allocator: *const std.mem.Allocator, world: *World) !void {
-            try world.addResource(allocator.*, ClearColor, .{ .r = 1, .g = 1, .b = 1 });
-            try world.addSystem(allocator.*, "update", fadeToBlack, null);
+        pub fn build(_: *@This(), allocator: std.mem.Allocator, world: *World) !void {
+            try world.addResource(allocator, ClearColor, .{ .r = 1, .g = 1, .b = 1 });
+            try world.addSystem(allocator, "update", fadeToBlack, null);
         }
 
-        fn fadeToBlack(world: *World, _: *const std.mem.Allocator) callconv(.c) void {
+        fn fadeToBlack(world: *World, _: std.mem.Allocator) !void {
             const color = world.getResource(ClearColor).?;
             color.r -= 0.1;
         }
@@ -1117,8 +1119,8 @@ test "World.runSystems flushes commands queued by a system after each group" {
     const Position = struct { x: f32, y: f32 };
 
     const system = struct {
-        fn call(world: *World, allocator: *const std.mem.Allocator) callconv(.c) void {
-            world.spawn(allocator.*, .{Position{ .x = 1, .y = 2 }}) catch unreachable;
+        fn call(world: *World, allocator: std.mem.Allocator) !void {
+            try world.spawn(allocator, .{Position{ .x = 1, .y = 2 }});
         }
     }.call;
 
@@ -1143,12 +1145,12 @@ test "World.addEntity triggers an Added event for each component type" {
         var velocity_entity: ?Entity = null;
     };
     const onPositionAdded = struct {
-        fn call(_: *World, _: *const std.mem.Allocator, event: *const Added(Position)) callconv(.c) void {
+        fn call(_: *World, _: std.mem.Allocator, event: *const Added(Position)) !void {
             State.position_entity = event.entity;
         }
     }.call;
     const onVelocityAdded = struct {
-        fn call(_: *World, _: *const std.mem.Allocator, event: *const Added(Velocity)) callconv(.c) void {
+        fn call(_: *World, _: std.mem.Allocator, event: *const Added(Velocity)) !void {
             State.velocity_entity = event.entity;
         }
     }.call;
@@ -1175,7 +1177,7 @@ test "World.addEntity does not trigger Added for a component type with no observ
         var position_entity: ?Entity = null;
     };
     const onPositionAdded = struct {
-        fn call(_: *World, _: *const std.mem.Allocator, event: *const Added(Position)) callconv(.c) void {
+        fn call(_: *World, _: std.mem.Allocator, event: *const Added(Position)) !void {
             State.position_entity = event.entity;
         }
     }.call;
@@ -1199,7 +1201,7 @@ test "World.removeEntity triggers a Destroying event for each component type" {
         var destroying_entity: ?Entity = null;
     };
     const onPositionDestroying = struct {
-        fn call(_: *World, _: *const std.mem.Allocator, event: *const Destroying(Position)) callconv(.c) void {
+        fn call(_: *World, _: std.mem.Allocator, event: *const Destroying(Position)) !void {
             State.destroying_entity = event.entity;
         }
     }.call;
@@ -1224,7 +1226,7 @@ test "World.removeEntity fires Destroying while the component is still readable"
         var observed: ?Position = null;
     };
     const onPositionDestroying = struct {
-        fn call(world: *World, _: *const std.mem.Allocator, event: *const Destroying(Position)) callconv(.c) void {
+        fn call(world: *World, _: std.mem.Allocator, event: *const Destroying(Position)) !void {
             const components = world.getEntity(event.entity, &.{Position}) catch return;
             State.observed = components[0].*;
         }
@@ -1248,7 +1250,7 @@ test "World.spawn triggers Added once the command queue is flushed" {
         var added_entity: ?Entity = null;
     };
     const onPositionAdded = struct {
-        fn call(_: *World, _: *const std.mem.Allocator, event: *const Added(Position)) callconv(.c) void {
+        fn call(_: *World, _: std.mem.Allocator, event: *const Added(Position)) !void {
             State.added_entity = event.entity;
         }
     }.call;
