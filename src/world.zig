@@ -4,8 +4,8 @@ const Archetype = @import("archetype.zig").Archetype;
 const LifecycleFunctions = @import("archetype.zig").LifecycleFunctions;
 const Entity = @import("entity.zig").Entity;
 const Error = @import("error.zig").Error;
-const Created = @import("lifecycle.zig").Created;
-const Destroyed = @import("lifecycle.zig").Destroyed;
+const Added = @import("lifecycle.zig").Added;
+const Destroying = @import("lifecycle.zig").Destroying;
 const hash = @import("hash.zig").hash;
 const hashBytes = @import("hash.zig").hashBytes;
 const sortMultiple = @import("sort.zig").sortMultiple;
@@ -86,8 +86,8 @@ pub const World = struct {
         self.entity_archetypes.items[slot] = archetype_id;
         self.entity_archetype_slots.items[slot] = archetype_slot;
 
-        for (self.archetypes.items[archetype_id].component_created) |created| {
-            created(self, allocator, entity);
+        for (self.archetypes.items[archetype_id].component_added) |added| {
+            added(self, allocator, entity);
         }
 
         return entity;
@@ -98,6 +98,11 @@ pub const World = struct {
         if (self.entity_generations.items[entity.id] != entity.generation) return;
 
         const archetype_id = self.entity_archetypes.items[entity.id].?;
+
+        for (self.archetypes.items[archetype_id].component_destroying) |destroying| {
+            destroying(self, allocator, entity);
+        }
+
         const archetype_slot = self.entity_archetype_slots.items[entity.id];
 
         const relocated = self.archetypes.items[archetype_id].removeEntity(archetype_slot, allocator);
@@ -109,10 +114,6 @@ pub const World = struct {
         self.entity_archetypes.items[entity.id] = null;
 
         try self.entity_free_list.append(allocator, entity.id);
-
-        for (self.archetypes.items[archetype_id].component_destroyed) |destroyed| {
-            destroyed(self, allocator, entity);
-        }
     }
 
     pub fn query(_: *World, comptime components: []const type) Query(components) {
@@ -262,16 +263,16 @@ fn spawnFunctions(comptime Components: type) SpawnFunctions {
 
 fn lifecycleFunctionsFor(comptime component: type) LifecycleFunctions {
     return .{
-        .created = struct {
+        .added = struct {
             fn call(world_ptr: *anyopaque, allocator: std.mem.Allocator, entity: Entity) void {
                 const world: *World = @ptrCast(@alignCast(world_ptr));
-                world.trigger(allocator, Created(component){ .entity = entity });
+                world.trigger(allocator, Added(component){ .entity = entity });
             }
         }.call,
-        .destroyed = struct {
+        .destroying = struct {
             fn call(world_ptr: *anyopaque, allocator: std.mem.Allocator, entity: Entity) void {
                 const world: *World = @ptrCast(@alignCast(world_ptr));
-                world.trigger(allocator, Destroyed(component){ .entity = entity });
+                world.trigger(allocator, Destroying(component){ .entity = entity });
             }
         }.call,
     };
@@ -1131,7 +1132,7 @@ test "World.runSystems flushes commands queued by a system after each group" {
     try std.testing.expectEqual(1, world.archetypes.items[0].entity_count);
 }
 
-test "World.addEntity triggers a Created event for each component type" {
+test "World.addEntity triggers an Added event for each component type" {
     const allocator = std.testing.allocator;
 
     const Position = struct { x: f32, y: f32 };
@@ -1141,13 +1142,13 @@ test "World.addEntity triggers a Created event for each component type" {
         var position_entity: ?Entity = null;
         var velocity_entity: ?Entity = null;
     };
-    const onPositionCreated = struct {
-        fn call(_: *World, _: *const std.mem.Allocator, event: *const Created(Position)) callconv(.c) void {
+    const onPositionAdded = struct {
+        fn call(_: *World, _: *const std.mem.Allocator, event: *const Added(Position)) callconv(.c) void {
             State.position_entity = event.entity;
         }
     }.call;
-    const onVelocityCreated = struct {
-        fn call(_: *World, _: *const std.mem.Allocator, event: *const Created(Velocity)) callconv(.c) void {
+    const onVelocityAdded = struct {
+        fn call(_: *World, _: *const std.mem.Allocator, event: *const Added(Velocity)) callconv(.c) void {
             State.velocity_entity = event.entity;
         }
     }.call;
@@ -1155,8 +1156,8 @@ test "World.addEntity triggers a Created event for each component type" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    try world.addObserver(allocator, onPositionCreated, null);
-    try world.addObserver(allocator, onVelocityCreated, null);
+    try world.addObserver(allocator, onPositionAdded, null);
+    try world.addObserver(allocator, onVelocityAdded, null);
 
     const entity = try world.addEntity(allocator, .{ Position{ .x = 1, .y = 2 }, Velocity{ .dx = 3, .dy = 4 } });
 
@@ -1164,7 +1165,7 @@ test "World.addEntity triggers a Created event for each component type" {
     try std.testing.expectEqual(entity, State.velocity_entity);
 }
 
-test "World.addEntity does not trigger Created for a component type with no observer" {
+test "World.addEntity does not trigger Added for a component type with no observer" {
     const allocator = std.testing.allocator;
 
     const Position = struct { x: f32, y: f32 };
@@ -1173,8 +1174,8 @@ test "World.addEntity does not trigger Created for a component type with no obse
     const State = struct {
         var position_entity: ?Entity = null;
     };
-    const onPositionCreated = struct {
-        fn call(_: *World, _: *const std.mem.Allocator, event: *const Created(Position)) callconv(.c) void {
+    const onPositionAdded = struct {
+        fn call(_: *World, _: *const std.mem.Allocator, event: *const Added(Position)) callconv(.c) void {
             State.position_entity = event.entity;
         }
     }.call;
@@ -1182,83 +1183,84 @@ test "World.addEntity does not trigger Created for a component type with no obse
     var world = World.init();
     defer world.deinit(allocator);
 
-    try world.addObserver(allocator, onPositionCreated, null);
+    try world.addObserver(allocator, onPositionAdded, null);
 
     _ = try world.addEntity(allocator, .{Velocity{ .dx = 1, .dy = 1 }});
 
     try std.testing.expectEqual(null, State.position_entity);
 }
 
-test "World.removeEntity triggers a Destroyed event for each component type" {
+test "World.removeEntity triggers a Destroying event for each component type" {
     const allocator = std.testing.allocator;
 
     const Position = struct { x: f32, y: f32 };
 
     const State = struct {
-        var destroyed_entity: ?Entity = null;
+        var destroying_entity: ?Entity = null;
     };
-    const onPositionDestroyed = struct {
-        fn call(_: *World, _: *const std.mem.Allocator, event: *const Destroyed(Position)) callconv(.c) void {
-            State.destroyed_entity = event.entity;
+    const onPositionDestroying = struct {
+        fn call(_: *World, _: *const std.mem.Allocator, event: *const Destroying(Position)) callconv(.c) void {
+            State.destroying_entity = event.entity;
         }
     }.call;
 
     var world = World.init();
     defer world.deinit(allocator);
 
-    try world.addObserver(allocator, onPositionDestroyed, null);
+    try world.addObserver(allocator, onPositionDestroying, null);
 
     const entity = try world.addEntity(allocator, .{Position{ .x = 1, .y = 2 }});
     try world.removeEntity(allocator, entity);
 
-    try std.testing.expectEqual(entity, State.destroyed_entity);
+    try std.testing.expectEqual(entity, State.destroying_entity);
 }
 
-test "World.removeEntity fires Destroyed only after the entity is already gone" {
+test "World.removeEntity fires Destroying while the component is still readable" {
     const allocator = std.testing.allocator;
 
     const Position = struct { x: f32, y: f32 };
 
     const State = struct {
-        var was_already_removed: bool = false;
+        var observed: ?Position = null;
     };
-    const onPositionDestroyed = struct {
-        fn call(world: *World, _: *const std.mem.Allocator, event: *const Destroyed(Position)) callconv(.c) void {
-            State.was_already_removed = world.entity_archetypes.items[event.entity.id] == null;
+    const onPositionDestroying = struct {
+        fn call(world: *World, _: *const std.mem.Allocator, event: *const Destroying(Position)) callconv(.c) void {
+            const components = world.getEntity(event.entity, &.{Position}) catch return;
+            State.observed = components[0].*;
         }
     }.call;
 
     var world = World.init();
     defer world.deinit(allocator);
 
-    try world.addObserver(allocator, onPositionDestroyed, null);
+    try world.addObserver(allocator, onPositionDestroying, null);
 
     const entity = try world.addEntity(allocator, .{Position{ .x = 1, .y = 2 }});
     try world.removeEntity(allocator, entity);
 
-    try std.testing.expect(State.was_already_removed);
+    try std.testing.expectEqual(Position{ .x = 1, .y = 2 }, State.observed);
 }
 
-test "World.spawn triggers Created once the command queue is flushed" {
+test "World.spawn triggers Added once the command queue is flushed" {
     const Position = struct { x: f32, y: f32 };
 
     const State = struct {
-        var created_entity: ?Entity = null;
+        var added_entity: ?Entity = null;
     };
-    const onPositionCreated = struct {
-        fn call(_: *World, _: *const std.mem.Allocator, event: *const Created(Position)) callconv(.c) void {
-            State.created_entity = event.entity;
+    const onPositionAdded = struct {
+        fn call(_: *World, _: *const std.mem.Allocator, event: *const Added(Position)) callconv(.c) void {
+            State.added_entity = event.entity;
         }
     }.call;
 
     var world = World.init();
     defer world.deinit(std.testing.allocator);
 
-    try world.addObserver(std.testing.allocator, onPositionCreated, null);
+    try world.addObserver(std.testing.allocator, onPositionAdded, null);
     try world.spawn(std.testing.allocator, .{Position{ .x = 1, .y = 2 }});
-    try std.testing.expectEqual(null, State.created_entity);
+    try std.testing.expectEqual(null, State.added_entity);
 
     try world.runSystems(std.testing.allocator);
 
-    try std.testing.expect(State.created_entity != null);
+    try std.testing.expect(State.added_entity != null);
 }

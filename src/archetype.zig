@@ -12,8 +12,8 @@ const preallocated_entities_count: usize = 16;
 pub const LifecycleFunction = *const fn (*anyopaque, std.mem.Allocator, Entity) void;
 
 pub const LifecycleFunctions = struct {
-    created: LifecycleFunction,
-    destroyed: LifecycleFunction,
+    added: LifecycleFunction,
+    destroying: LifecycleFunction,
 };
 
 pub const Archetype = struct {
@@ -23,8 +23,8 @@ pub const Archetype = struct {
     component_ids: []const u64,
     component_sizes: []const u32,
     component_deinits: []const ?DeinitFunction,
-    component_created: []const LifecycleFunction,
-    component_destroyed: []const LifecycleFunction,
+    component_added: []const LifecycleFunction,
+    component_destroying: []const LifecycleFunction,
     data: [][]align(64) u8,
 
     pub fn init(
@@ -47,14 +47,14 @@ pub const Archetype = struct {
             component_deinits[idx] = getDeinitFunctionFor(component);
         }
 
-        const component_created = try allocator.alloc(LifecycleFunction, components.len);
-        errdefer allocator.free(component_created);
-        const component_destroyed = try allocator.alloc(LifecycleFunction, components.len);
-        errdefer allocator.free(component_destroyed);
+        const component_added = try allocator.alloc(LifecycleFunction, components.len);
+        errdefer allocator.free(component_added);
+        const component_destroying = try allocator.alloc(LifecycleFunction, components.len);
+        errdefer allocator.free(component_destroying);
         inline for (components, 0..) |component, idx| {
             const functions = lifecycleFunctionsFor(component);
-            component_created[idx] = functions.created;
-            component_destroyed[idx] = functions.destroyed;
+            component_added[idx] = functions.added;
+            component_destroying[idx] = functions.destroying;
         }
 
         // Alignment here to optimize cache reads.
@@ -76,8 +76,8 @@ pub const Archetype = struct {
         sortMultiple(component_ids, .{
             component_sizes,
             component_deinits,
-            component_created,
-            component_destroyed,
+            component_added,
+            component_destroying,
             data,
         });
 
@@ -89,8 +89,8 @@ pub const Archetype = struct {
             .component_ids = component_ids,
             .component_sizes = component_sizes,
             .component_deinits = component_deinits,
-            .component_created = component_created,
-            .component_destroyed = component_destroyed,
+            .component_added = component_added,
+            .component_destroying = component_destroying,
             .data = data,
             .entities = entities,
         };
@@ -112,8 +112,8 @@ pub const Archetype = struct {
         allocator.free(self.component_ids);
         allocator.free(self.component_sizes);
         allocator.free(self.component_deinits);
-        allocator.free(self.component_created);
-        allocator.free(self.component_destroyed);
+        allocator.free(self.component_added);
+        allocator.free(self.component_destroying);
         for (self.data) |value| allocator.free(value);
         allocator.free(self.data);
         allocator.free(self.entities);
@@ -269,10 +269,10 @@ fn getDeinitFunctionFor(comptime component: type) ?DeinitFunction {
 fn noOpLifecycleFunctionsFor(comptime component: type) LifecycleFunctions {
     _ = component;
     return .{
-        .created = struct {
+        .added = struct {
             fn call(_: *anyopaque, _: std.mem.Allocator, _: Entity) void {}
         }.call,
-        .destroyed = struct {
+        .destroying = struct {
             fn call(_: *anyopaque, _: std.mem.Allocator, _: Entity) void {}
         }.call,
     };
