@@ -160,6 +160,7 @@ pub const World = struct {
 
     pub fn runSystems(self: *World, allocator: std.mem.Allocator) !void {
         try self.flushSystemRegistrations(allocator);
+        try self.command_queue.flush(allocator, self);
 
         self.system_registry.runOneShotSystems(allocator, self);
         try self.command_queue.flush(allocator, self);
@@ -2419,4 +2420,101 @@ test "a system can follow an Entity stored in a component without taking *World"
     try std.testing.expectEqual(@as(f32, 6), State.target_x);
     const position = try world.getEntity(target, &.{Position});
     try std.testing.expectEqual(@as(f32, 6), position[0].x);
+}
+
+test "a one-shot system sees resources its plugin's build created through Commands" {
+    const allocator = std.testing.allocator;
+
+    const Config = struct { scale: f32 };
+
+    const State = struct {
+        var seen: ?f32 = null;
+    };
+    State.seen = null;
+
+    const Plugin = struct {
+        pub fn build(_: *@This(), commands: Commands) !void {
+            try commands.addResource(Config, .{ .scale = 2 });
+            try commands.addOneShotSystem(startup, null);
+        }
+
+        fn startup(config: Resource(Config)) void {
+            State.seen = config.value.scale;
+        }
+    };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try world.addPlugin(allocator, Plugin);
+    try world.runSystems(allocator);
+
+    try std.testing.expectEqual(@as(f32, 2), State.seen.?);
+}
+
+test "a one-shot system sees resources another plugin's build created" {
+    const allocator = std.testing.allocator;
+
+    const Config = struct { scale: f32 };
+
+    const State = struct {
+        var seen: ?f32 = null;
+    };
+    State.seen = null;
+
+    const Provider = struct {
+        pub fn build(_: *@This(), commands: Commands) !void {
+            try commands.addResource(Config, .{ .scale = 3 });
+        }
+    };
+    const Consumer = struct {
+        pub fn build(_: *@This(), commands: Commands) !void {
+            try commands.addOneShotSystem(startup, null);
+        }
+
+        fn startup(config: Resource(Config)) void {
+            State.seen = config.value.scale;
+        }
+    };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try world.addPlugin(allocator, Consumer);
+    try world.addPlugin(allocator, Provider);
+
+    try world.runSystems(allocator);
+
+    try std.testing.expectEqual(@as(f32, 3), State.seen.?);
+}
+
+test "a one-shot system sees entities its plugin's build spawned through Commands" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+
+    const State = struct {
+        var seen: usize = 0;
+    };
+    State.seen = 0;
+
+    const Plugin = struct {
+        pub fn build(_: *@This(), commands: Commands) !void {
+            try commands.spawn(.{Position{ .x = 1, .y = 1 }});
+            try commands.addOneShotSystem(startup, null);
+        }
+
+        fn startup(positions: Query(&.{Position})) void {
+            var it = positions.iterator();
+            while (it.next()) |_| State.seen += 1;
+        }
+    };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try world.addPlugin(allocator, Plugin);
+    try world.runSystems(allocator);
+
+    try std.testing.expectEqual(1, State.seen);
 }
