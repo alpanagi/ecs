@@ -14,6 +14,7 @@ const EntityComponents = @import("util.zig").EntityComponents;
 const PluginRegistry = @import("plugin_registry.zig").PluginRegistry;
 const SystemRegistry = @import("system_registry.zig").SystemRegistry;
 const SystemEntry = @import("system_registry.zig").SystemEntry;
+const Event = @import("system_registry.zig").Event;
 const ResourceRegistry = @import("resource_registry.zig").ResourceRegistry;
 const CommandQueue = @import("command_queue.zig").CommandQueue;
 const SpawnFunctions = @import("command_queue.zig").SpawnFunctions;
@@ -47,6 +48,11 @@ pub const World = struct {
     }
 
     pub fn deinit(self: *World, allocator: std.mem.Allocator) void {
+        self.plugin_registry.deinit(allocator);
+        self.resource_registry.deinit(allocator);
+        self.system_registry.deinit(allocator);
+        self.command_queue.deinit(allocator);
+
         for (self.archetypes.items) |*archetype| archetype.deinit(allocator);
 
         self.entity_generations.deinit(allocator);
@@ -54,10 +60,6 @@ pub const World = struct {
         self.entity_archetypes.deinit(allocator);
         self.entity_archetype_slots.deinit(allocator);
         self.entity_free_list.deinit(allocator);
-        self.system_registry.deinit(allocator);
-        self.plugin_registry.deinit(allocator);
-        self.resource_registry.deinit(allocator);
-        self.command_queue.deinit(allocator);
     }
 
     fn addEntity(self: *World, allocator: std.mem.Allocator, components: anytype) !Entity {
@@ -116,8 +118,8 @@ pub const World = struct {
         try self.entity_free_list.append(allocator, entity.id);
     }
 
-    pub fn query(_: *World, comptime components: []const type) Query(components) {
-        return .{};
+    pub fn query(self: *World, comptime components: []const type) Query(components) {
+        return .{ .world = self };
     }
 
     pub fn getEntity(
@@ -282,33 +284,60 @@ fn lifecycleFunctionsFor(comptime component: type) LifecycleFunctions {
 
 pub fn Query(comptime components: []const type) type {
     return struct {
-        archetype_cursor: usize = 0,
-        entity_cursor: u32 = 0,
+        world: *World,
 
-        pub fn next(self: *@This(), world: *World) ?EntityComponents(components) {
-            while (self.archetype_cursor < world.archetypes.items.len) {
-                const archetype = &world.archetypes.items[self.archetype_cursor];
+        pub fn fromWorld(_: std.mem.Allocator, world: *World) @This() {
+            return .{ .world = world };
+        }
 
-                if (self.entity_cursor == 0 and !archetype.hasComponents(components)) {
-                    self.archetype_cursor += 1;
-                    continue;
+        pub const Iterator = struct {
+            world: *World,
+            archetype_cursor: usize = 0,
+            entity_cursor: u32 = 0,
+
+            pub fn next(self: *Iterator) ?EntityComponents(components) {
+                while (self.archetype_cursor < self.world.archetypes.items.len) {
+                    const archetype = &self.world.archetypes.items[self.archetype_cursor];
+
+                    if (self.entity_cursor == 0 and !archetype.hasComponents(components)) {
+                        self.archetype_cursor += 1;
+                        continue;
+                    }
+
+                    if (self.entity_cursor >= archetype.entity_count) {
+                        self.archetype_cursor += 1;
+                        self.entity_cursor = 0;
+                        continue;
+                    }
+
+                    const result = archetype.getComponents(self.entity_cursor, components) catch |err| {
+                        panic("World.Query.Iterator.next: unexpected error from getComponents: {}\n", .{err});
+                    };
+
+                    self.entity_cursor += 1;
+                    return result;
                 }
 
-                if (self.entity_cursor >= archetype.entity_count) {
-                    self.archetype_cursor += 1;
-                    self.entity_cursor = 0;
-                    continue;
-                }
-
-                const result = archetype.getComponents(self.entity_cursor, components) catch |err| {
-                    panic("World.Query.next: unexpected error from getComponents: {}\n", .{err});
-                };
-
-                self.entity_cursor += 1;
-                return result;
+                return null;
             }
+        };
 
-            return null;
+        pub fn iterator(self: @This()) Iterator {
+            return .{ .world = self.world };
+        }
+    };
+}
+
+pub fn Resource(comptime T: type) type {
+    return struct {
+        value: *T,
+
+        pub fn fromWorld(_: std.mem.Allocator, world: *World) @This() {
+            const value = world.getResource(T) orelse panic(
+                "system requires resource {s} but it is not registered\n",
+                .{@typeName(T)},
+            );
+            return .{ .value = value };
         }
     };
 }
@@ -641,8 +670,9 @@ test "query yields components for every entity across all matching archetypes" {
     var count: usize = 0;
     var sum_x: f32 = 0;
 
-    var query = world.query(&.{Position});
-    while (query.next(&world)) |result| {
+    const query = world.query(&.{Position});
+    var it = query.iterator();
+    while (it.next()) |result| {
         count += 1;
         sum_x += result[0].x;
     }
@@ -662,8 +692,9 @@ test "query returns null immediately when no archetypes match" {
 
     _ = try world.addEntity(allocator, .{Velocity{ .dx = 1, .dy = 1 }});
 
-    var query = world.query(&.{Position});
-    try std.testing.expectEqual(null, query.next(&world));
+    const query = world.query(&.{Position});
+    var it = query.iterator();
+    try std.testing.expectEqual(null, it.next());
 }
 
 test "query skips entities in archetypes that don't have the requested components" {
@@ -679,13 +710,321 @@ test "query skips entities in archetypes that don't have the requested component
     _ = try world.addEntity(allocator, .{Position{ .x = 5, .y = 5 }});
 
     var count: usize = 0;
-    var query = world.query(&.{Position});
-    while (query.next(&world)) |result| {
+    const query = world.query(&.{Position});
+    var it = query.iterator();
+    while (it.next()) |result| {
         count += 1;
         try std.testing.expectEqual(@as(f32, 5), result[0].x);
     }
 
     try std.testing.expectEqual(1, count);
+}
+
+test "one query spec produces independent iterators" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    _ = try world.addEntity(allocator, .{Position{ .x = 1, .y = 1 }});
+    _ = try world.addEntity(allocator, .{Position{ .x = 2, .y = 2 }});
+
+    const query = world.query(&.{Position});
+
+    var outer = query.iterator();
+    var pairs: usize = 0;
+    while (outer.next()) |_| {
+        var inner = query.iterator();
+        while (inner.next()) |_| pairs += 1;
+    }
+
+    try std.testing.expectEqual(4, pairs);
+}
+
+test "a query spec is reusable after its iterator is exhausted" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    _ = try world.addEntity(allocator, .{Position{ .x = 3, .y = 3 }});
+
+    const query = world.query(&.{Position});
+
+    var first = query.iterator();
+    while (first.next()) |_| {}
+    try std.testing.expectEqual(null, first.next());
+
+    var second = query.iterator();
+    try std.testing.expect(second.next() != null);
+}
+
+test "a system can take a query as a parameter" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+
+    const State = struct {
+        var sum: f32 = 0;
+    };
+    State.sum = 0;
+
+    const system = struct {
+        fn call(query: Query(&.{Position})) !void {
+            var it = query.iterator();
+            while (it.next()) |row| State.sum += row[0].x;
+        }
+    }.call;
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    _ = try world.addEntity(allocator, .{Position{ .x = 1, .y = 0 }});
+    _ = try world.addEntity(allocator, .{Position{ .x = 2, .y = 0 }});
+
+    try world.addSystem(allocator, "update", system, null);
+    try world.runSystems(allocator);
+
+    try std.testing.expectEqual(@as(f32, 3), State.sum);
+}
+
+test "a system can mix queries with other params in any order" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+    const Velocity = struct { dx: f32, dy: f32 };
+
+    const State = struct {
+        var positions: usize = 0;
+        var velocities: usize = 0;
+        var saw_world: bool = false;
+    };
+    State.positions = 0;
+    State.velocities = 0;
+    State.saw_world = false;
+
+    const system = struct {
+        fn call(
+            velocities: Query(&.{Velocity}),
+            world: *World,
+            _: std.mem.Allocator,
+            positions: Query(&.{Position}),
+        ) !void {
+            State.saw_world = world.archetypes.items.len > 0;
+
+            var v = velocities.iterator();
+            while (v.next()) |_| State.velocities += 1;
+
+            var p = positions.iterator();
+            while (p.next()) |_| State.positions += 1;
+        }
+    }.call;
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    _ = try world.addEntity(allocator, .{Position{ .x = 1, .y = 1 }});
+    _ = try world.addEntity(allocator, .{ Position{ .x = 2, .y = 2 }, Velocity{ .dx = 1, .dy = 1 } });
+
+    try world.addSystem(allocator, "update", system, null);
+    try world.runSystems(allocator);
+
+    try std.testing.expectEqual(2, State.positions);
+    try std.testing.expectEqual(1, State.velocities);
+    try std.testing.expect(State.saw_world);
+}
+
+test "a query parameter can mutate the components it yields" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+
+    const system = struct {
+        fn call(query: Query(&.{Position})) !void {
+            var it = query.iterator();
+            while (it.next()) |row| row[0].x += 10;
+        }
+    }.call;
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    const entity = try world.addEntity(allocator, .{Position{ .x = 1, .y = 0 }});
+
+    try world.addSystem(allocator, "update", system, null);
+    try world.runSystems(allocator);
+
+    const position = try world.getEntity(entity, &.{Position});
+    try std.testing.expectEqual(@as(f32, 11), position[0].x);
+}
+
+test "a system can take a resource as a parameter" {
+    const allocator = std.testing.allocator;
+
+    const ClearColor = struct { r: f32, g: f32, b: f32 };
+
+    const State = struct {
+        var red: f32 = 0;
+    };
+    State.red = 0;
+
+    const system = struct {
+        fn call(color: Resource(ClearColor)) !void {
+            State.red = color.value.r;
+        }
+    }.call;
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try world.addResource(allocator, ClearColor, .{ .r = 0.5, .g = 0, .b = 0 });
+    try world.addSystem(allocator, "update", system, null);
+    try world.runSystems(allocator);
+
+    try std.testing.expectEqual(@as(f32, 0.5), State.red);
+}
+
+test "a resource parameter writes through to the stored resource" {
+    const allocator = std.testing.allocator;
+
+    const Counter = struct { hits: u32 };
+
+    const system = struct {
+        fn call(counter: Resource(Counter)) !void {
+            counter.value.hits += 1;
+        }
+    }.call;
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try world.addResource(allocator, Counter, .{ .hits = 0 });
+    try world.addSystem(allocator, "update", system, null);
+
+    try world.runSystems(allocator);
+    try world.runSystems(allocator);
+
+    try std.testing.expectEqual(2, world.getResource(Counter).?.hits);
+}
+
+test "a system can mix resources, queries and the world" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+    const Gravity = struct { value: f32 };
+
+    const system = struct {
+        fn call(
+            gravity: Resource(Gravity),
+            query: Query(&.{Position}),
+            _: *World,
+        ) !void {
+            var it = query.iterator();
+            while (it.next()) |row| row[0].y -= gravity.value.value;
+        }
+    }.call;
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try world.addResource(allocator, Gravity, .{ .value = 2 });
+    const entity = try world.addEntity(allocator, .{Position{ .x = 0, .y = 10 }});
+    try world.addSystem(allocator, "update", system, null);
+
+    try world.runSystems(allocator);
+
+    const position = try world.getEntity(entity, &.{Position});
+    try std.testing.expectEqual(@as(f32, 8), position[0].y);
+}
+
+test "a plugin system and observer can declare params beyond the receiver" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+    const Damage = struct { amount: u32 };
+
+    const Plugin = struct {
+        moved: usize = 0,
+        damage_seen: u32 = 0,
+
+        pub fn init(_: std.mem.Allocator) !@This() {
+            return .{};
+        }
+
+        pub fn build(self: *@This(), plugin_allocator: std.mem.Allocator, world: *World) !void {
+            try world.addSystem(plugin_allocator, "update", move, self);
+            try world.addObserver(plugin_allocator, onDamage, self);
+        }
+
+        fn move(self: *@This(), query: Query(&.{Position})) !void {
+            var it = query.iterator();
+            while (it.next()) |row| {
+                row[0].x += 1;
+                self.moved += 1;
+            }
+        }
+
+        fn onDamage(self: *@This(), event: Event(Damage)) !void {
+            self.damage_seen += event.value.amount;
+        }
+    };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    _ = try world.addEntity(allocator, .{Position{ .x = 0, .y = 0 }});
+    _ = try world.addEntity(allocator, .{Position{ .x = 5, .y = 0 }});
+
+    try world.addPlugin(allocator, Plugin);
+    try world.runSystems(allocator);
+    world.trigger(allocator, Damage{ .amount = 7 });
+
+    const plugin = world.plugin_registry.plugins.items[0];
+    const typed: *Plugin = @ptrCast(@alignCast(plugin.plugin));
+
+    try std.testing.expectEqual(2, typed.moved);
+    try std.testing.expectEqual(7, typed.damage_seen);
+}
+
+test "a plugin can still query entities from its deinit" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+
+    const State = struct {
+        var seen: usize = 0;
+    };
+    State.seen = 0;
+
+    const Plugin = struct {
+        world: *World = undefined,
+
+        pub fn init(_: std.mem.Allocator) !@This() {
+            return .{};
+        }
+
+        pub fn build(self: *@This(), plugin_allocator: std.mem.Allocator, world: *World) !void {
+            self.world = world;
+            _ = try world.addEntity(plugin_allocator, .{Position{ .x = 1, .y = 1 }});
+            _ = try world.addEntity(plugin_allocator, .{Position{ .x = 2, .y = 2 }});
+        }
+
+        pub fn deinit(self: *@This(), _: std.mem.Allocator) void {
+            const query = self.world.query(&.{Position});
+            var it = query.iterator();
+            while (it.next()) |_| State.seen += 1;
+        }
+    };
+
+    var world = World.init();
+    try world.addPlugin(allocator, Plugin);
+    world.deinit(allocator);
+
+    try std.testing.expectEqual(2, State.seen);
 }
 
 test "World.getEntity returns pointers to the requested entity's components" {
@@ -942,8 +1281,8 @@ test "World.trigger runs an observer registered through World.addObserver" {
         var seen: u32 = 0;
     };
     const onDamage = struct {
-        fn call(_: *World, _: std.mem.Allocator, event: *const Damage) !void {
-            State.seen = event.amount;
+        fn call(event: Event(Damage)) !void {
+            State.seen = event.value.amount;
         }
     }.call;
 
@@ -965,8 +1304,8 @@ test "a plugin's build can register an observer through World.addObserver" {
             try world.addObserver(allocator, onDamage, self);
         }
 
-        fn onDamage(self: *@This(), _: std.mem.Allocator, _: *World, event: *const Damage) !void {
-            self.total += event.amount;
+        fn onDamage(self: *@This(), event: Event(Damage)) !void {
+            self.total += event.value.amount;
         }
     };
 
@@ -1145,13 +1484,13 @@ test "World.addEntity triggers an Added event for each component type" {
         var velocity_entity: ?Entity = null;
     };
     const onPositionAdded = struct {
-        fn call(_: *World, _: std.mem.Allocator, event: *const Added(Position)) !void {
-            State.position_entity = event.entity;
+        fn call(event: Event(Added(Position))) !void {
+            State.position_entity = event.value.entity;
         }
     }.call;
     const onVelocityAdded = struct {
-        fn call(_: *World, _: std.mem.Allocator, event: *const Added(Velocity)) !void {
-            State.velocity_entity = event.entity;
+        fn call(event: Event(Added(Velocity))) !void {
+            State.velocity_entity = event.value.entity;
         }
     }.call;
 
@@ -1177,8 +1516,8 @@ test "World.addEntity does not trigger Added for a component type with no observ
         var position_entity: ?Entity = null;
     };
     const onPositionAdded = struct {
-        fn call(_: *World, _: std.mem.Allocator, event: *const Added(Position)) !void {
-            State.position_entity = event.entity;
+        fn call(event: Event(Added(Position))) !void {
+            State.position_entity = event.value.entity;
         }
     }.call;
 
@@ -1201,8 +1540,8 @@ test "World.removeEntity triggers a Destroying event for each component type" {
         var destroying_entity: ?Entity = null;
     };
     const onPositionDestroying = struct {
-        fn call(_: *World, _: std.mem.Allocator, event: *const Destroying(Position)) !void {
-            State.destroying_entity = event.entity;
+        fn call(event: Event(Destroying(Position))) !void {
+            State.destroying_entity = event.value.entity;
         }
     }.call;
 
@@ -1226,8 +1565,8 @@ test "World.removeEntity fires Destroying while the component is still readable"
         var observed: ?Position = null;
     };
     const onPositionDestroying = struct {
-        fn call(world: *World, _: std.mem.Allocator, event: *const Destroying(Position)) !void {
-            const components = world.getEntity(event.entity, &.{Position}) catch return;
+        fn call(world: *World, event: Event(Destroying(Position))) !void {
+            const components = world.getEntity(event.value.entity, &.{Position}) catch return;
             State.observed = components[0].*;
         }
     }.call;
@@ -1250,8 +1589,8 @@ test "World.spawn triggers Added once the command queue is flushed" {
         var added_entity: ?Entity = null;
     };
     const onPositionAdded = struct {
-        fn call(_: *World, _: std.mem.Allocator, event: *const Added(Position)) !void {
-            State.added_entity = event.entity;
+        fn call(event: Event(Added(Position))) !void {
+            State.added_entity = event.value.entity;
         }
     }.call;
 
