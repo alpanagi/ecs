@@ -4,6 +4,8 @@ const World = @import("world.zig").World;
 const DeinitFunction = @import("deinit.zig").DeinitFunction;
 const getDeinitFunction = @import("deinit.zig").getDeinitFunction;
 const deinitIfPresent = @import("deinit.zig").deinitIfPresent;
+const resolveParameter = @import("parameter.zig").resolveParameter;
+const Resource = @import("world.zig").Resource;
 
 const PluginEntry = struct {
     plugin: *anyopaque,
@@ -53,9 +55,66 @@ pub const PluginRegistry = struct {
         if (!std.meta.hasFn(T, "build")) {
             @compileError(@typeName(T) ++ " must declare build");
         }
-        try plugin.build(allocator, world);
+
+        const build_parameters = @typeInfo(@TypeOf(T.build)).@"fn".params;
+        if (build_parameters.len == 0 or build_parameters[0].type.? != *T) {
+            @compileError(@typeName(T) ++ ".build must take *" ++ @typeName(T) ++ " as its first parameter");
+        }
+
+        var arguments: std.meta.ArgsTuple(@TypeOf(T.build)) = undefined;
+        inline for (&arguments, 0..) |*argument, index| {
+            if (comptime index == 0) {
+                argument.* = plugin;
+            } else {
+                argument.* = resolveParameter(@TypeOf(argument.*), allocator, world);
+            }
+        }
+        try @call(.auto, T.build, arguments);
     }
 };
+
+test "a plugin's build may declare only the parameters it needs" {
+    const State = struct {
+        var ran: bool = false;
+    };
+    State.ran = false;
+
+    const Plugin = struct {
+        pub fn build(_: *@This(), world: *World) !void {
+            State.ran = world.archetypes.items.len == 0;
+        }
+    };
+
+    var world = World.init();
+    defer world.deinit(std.testing.allocator);
+    try world.addPlugin(std.testing.allocator, Plugin);
+
+    try std.testing.expect(State.ran);
+}
+
+test "a plugin's build can declare a resource dependency" {
+    const allocator = std.testing.allocator;
+
+    const Config = struct { scale: f32 };
+    const State = struct {
+        var scale: f32 = 0;
+    };
+    State.scale = 0;
+
+    const Plugin = struct {
+        pub fn build(_: *@This(), config: Resource(Config)) !void {
+            State.scale = config.value.scale;
+        }
+    };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try world.addResource(allocator, Config, .{ .scale = 2.5 });
+    try world.addPlugin(allocator, Plugin);
+
+    try std.testing.expectEqual(@as(f32, 2.5), State.scale);
+}
 
 test "addPlugin runs the plugin's init immediately and stores it" {
     const State = struct {

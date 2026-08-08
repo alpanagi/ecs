@@ -2,6 +2,8 @@ const std = @import("std");
 
 const World = @import("world.zig").World;
 const hash = @import("hash.zig").hash;
+const resolveParameter = @import("parameter.zig").resolveParameter;
+const resolveObserverParameter = @import("parameter.zig").resolveObserverParameter;
 
 pub const SystemFunction = *const fn (*World, std.mem.Allocator) anyerror!void;
 pub const ObserverFunction = *const fn (*World, std.mem.Allocator, *const anyopaque) anyerror!void;
@@ -207,10 +209,10 @@ fn eventPayload(comptime Function: type, comptime skipped: usize) type {
     comptime var found: ?type = null;
     inline for (info.params, 0..) |param, index| {
         if (index < skipped) continue;
-        const Param = param.type.?;
-        if (comptime std.meta.hasFn(Param, "fromEvent")) {
+        const Parameter = param.type.?;
+        if (comptime std.meta.hasFn(Parameter, "fromEvent")) {
             if (found != null) @compileError("an observer must declare exactly one Event parameter");
-            found = Param.Payload;
+            found = Parameter.Payload;
         }
     }
     return found orelse @compileError(
@@ -230,27 +232,12 @@ fn functionInfo(comptime F: type) std.builtin.Type.Fn {
     };
 }
 
-fn resolveParam(comptime Param: type, allocator: std.mem.Allocator, world: *World) Param {
-    if (comptime Param == *World) {
-        return world;
-    } else if (comptime Param == std.mem.Allocator) {
-        return allocator;
-    } else if (comptime std.meta.hasFn(Param, "fromWorld")) {
-        return Param.fromWorld(allocator, world);
-    } else {
-        @compileError(
-            "unsupported system parameter type " ++ @typeName(Param) ++
-                ", expected *World, std.mem.Allocator, or a type declaring fromWorld",
-        );
-    }
-}
-
 fn systemInvoker(comptime function: anytype) SystemFunction {
     return struct {
         fn call(world: *World, allocator: std.mem.Allocator) anyerror!void {
-            var args: std.meta.ArgsTuple(@TypeOf(function)) = undefined;
-            inline for (&args) |*arg| arg.* = resolveParam(@TypeOf(arg.*), allocator, world);
-            return @call(.auto, function, args);
+            var arguments: std.meta.ArgsTuple(@TypeOf(function)) = undefined;
+            inline for (&arguments) |*argument| argument.* = resolveParameter(@TypeOf(argument.*), allocator, world);
+            return @call(.auto, function, arguments);
         }
     }.call;
 }
@@ -258,45 +245,33 @@ fn systemInvoker(comptime function: anytype) SystemFunction {
 fn pluginInvoker(comptime T: type, comptime function: anytype) PluginSystemFunction {
     return struct {
         fn call(plugin: *anyopaque, allocator: std.mem.Allocator, world: *World) anyerror!void {
-            var args: std.meta.ArgsTuple(@TypeOf(function)) = undefined;
-            inline for (&args, 0..) |*arg, index| {
+            var arguments: std.meta.ArgsTuple(@TypeOf(function)) = undefined;
+            inline for (&arguments, 0..) |*argument, index| {
                 if (comptime index == 0) {
                     const typed_plugin: *T = @ptrCast(@alignCast(plugin));
-                    arg.* = typed_plugin;
+                    argument.* = typed_plugin;
                 } else {
-                    arg.* = resolveParam(@TypeOf(arg.*), allocator, world);
+                    argument.* = resolveParameter(@TypeOf(argument.*), allocator, world);
                 }
             }
-            return @call(.auto, function, args);
+            return @call(.auto, function, arguments);
         }
     }.call;
-}
-
-fn resolveObserverParam(
-    comptime Param: type,
-    allocator: std.mem.Allocator,
-    world: *World,
-    payload: *const anyopaque,
-) Param {
-    if (comptime std.meta.hasFn(Param, "fromEvent")) {
-        return Param.fromEvent(payload);
-    }
-    return resolveParam(Param, allocator, world);
 }
 
 fn pluginObserverInvoker(comptime T: type, comptime function: anytype) PluginObserverFunction {
     return struct {
         fn call(plugin: *anyopaque, allocator: std.mem.Allocator, world: *World, payload: *const anyopaque) anyerror!void {
-            var args: std.meta.ArgsTuple(@TypeOf(function)) = undefined;
-            inline for (&args, 0..) |*arg, index| {
+            var arguments: std.meta.ArgsTuple(@TypeOf(function)) = undefined;
+            inline for (&arguments, 0..) |*argument, index| {
                 if (comptime index == 0) {
                     const typed_plugin: *T = @ptrCast(@alignCast(plugin));
-                    arg.* = typed_plugin;
+                    argument.* = typed_plugin;
                 } else {
-                    arg.* = resolveObserverParam(@TypeOf(arg.*), allocator, world, payload);
+                    argument.* = resolveObserverParameter(@TypeOf(argument.*), allocator, world, payload);
                 }
             }
-            return @call(.auto, function, args);
+            return @call(.auto, function, arguments);
         }
     }.call;
 }
@@ -304,16 +279,16 @@ fn pluginObserverInvoker(comptime T: type, comptime function: anytype) PluginObs
 fn observerInvoker(comptime function: anytype) ObserverFunction {
     return struct {
         fn call(world: *World, allocator: std.mem.Allocator, payload: *const anyopaque) anyerror!void {
-            var args: std.meta.ArgsTuple(@TypeOf(function)) = undefined;
-            inline for (&args) |*arg| {
-                arg.* = resolveObserverParam(@TypeOf(arg.*), allocator, world, payload);
+            var arguments: std.meta.ArgsTuple(@TypeOf(function)) = undefined;
+            inline for (&arguments) |*argument| {
+                argument.* = resolveObserverParameter(@TypeOf(argument.*), allocator, world, payload);
             }
-            return @call(.auto, function, args);
+            return @call(.auto, function, arguments);
         }
     }.call;
 }
 
-test "a system may declare only the params it needs, in any order" {
+test "a system may declare only the parameters it needs, in any order" {
     const State = struct {
         var calls: [4]u8 = undefined;
         var count: usize = 0;

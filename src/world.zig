@@ -792,7 +792,7 @@ test "a system can take a query as a parameter" {
     try std.testing.expectEqual(@as(f32, 3), State.sum);
 }
 
-test "a system can mix queries with other params in any order" {
+test "a system can mix queries with other parameters in any order" {
     const allocator = std.testing.allocator;
 
     const Position = struct { x: f32, y: f32 };
@@ -941,7 +941,7 @@ test "a system can mix resources, queries and the world" {
     try std.testing.expectEqual(@as(f32, 8), position[0].y);
 }
 
-test "a plugin system and observer can declare params beyond the receiver" {
+test "a plugin system and observer can declare parameters beyond the receiver" {
     const allocator = std.testing.allocator;
 
     const Position = struct { x: f32, y: f32 };
