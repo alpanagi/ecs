@@ -76,8 +76,7 @@ pub const SystemRegistry = struct {
         comptime function: anytype,
         plugin: anytype,
     ) !void {
-        const entry = buildSystemEntry(function, plugin);
-        try appendEntry(SystemEntry, &self.groups, allocator, group, entry);
+        try self.addSystemEntry(allocator, group, buildSystemEntry(function, plugin));
     }
 
     pub fn registerOneShotSystem(
@@ -86,8 +85,33 @@ pub const SystemRegistry = struct {
         comptime function: anytype,
         plugin: anytype,
     ) !void {
-        const entry = buildSystemEntry(function, plugin);
+        try self.addOneShotSystemEntry(allocator, buildSystemEntry(function, plugin));
+    }
+
+    pub fn addSystemEntry(
+        self: *SystemRegistry,
+        allocator: std.mem.Allocator,
+        group: u64,
+        entry: SystemEntry,
+    ) !void {
+        try appendEntry(SystemEntry, &self.groups, allocator, group, entry);
+    }
+
+    pub fn addOneShotSystemEntry(
+        self: *SystemRegistry,
+        allocator: std.mem.Allocator,
+        entry: SystemEntry,
+    ) !void {
         try self.one_shot_systems.append(allocator, entry);
+    }
+
+    pub fn addObserverEntry(
+        self: *SystemRegistry,
+        allocator: std.mem.Allocator,
+        event: u64,
+        entry: ObserverEntry,
+    ) !void {
+        try appendEntry(ObserverEntry, &self.observers, allocator, event, entry);
     }
 
     pub fn runOneShotSystems(self: *SystemRegistry, allocator: std.mem.Allocator, world: *World) void {
@@ -107,24 +131,8 @@ pub const SystemRegistry = struct {
         comptime function: anytype,
         plugin: anytype,
     ) !void {
-        var entry: ObserverEntry = undefined;
-        var event: u64 = undefined;
-
-        if (comptime @TypeOf(plugin) == @TypeOf(null)) {
-            event = hash(eventPayload(@TypeOf(function), 0));
-            entry = .{ .function = observerInvoker(function) };
-        } else {
-            const Plugin = pluginType(@TypeOf(plugin));
-            validatePluginReceiver(Plugin, @TypeOf(function), "observer");
-            event = hash(eventPayload(@TypeOf(function), 1));
-            const typed_plugin: *Plugin = plugin;
-            entry = .{ .plugin_function = .{
-                .plugin = typed_plugin,
-                .function = pluginObserverInvoker(Plugin, function),
-            } };
-        }
-
-        try appendEntry(ObserverEntry, &self.observers, allocator, event, entry);
+        const registration = buildObserverEntry(function, plugin);
+        try self.addObserverEntry(allocator, registration.event, registration.entry);
     }
 
     pub fn dispatch(
@@ -160,7 +168,32 @@ fn appendEntry(
     };
 }
 
-fn buildSystemEntry(comptime function: anytype, plugin: anytype) SystemEntry {
+pub const ObserverRegistration = struct {
+    event: u64,
+    entry: ObserverEntry,
+};
+
+pub fn buildObserverEntry(comptime function: anytype, plugin: anytype) ObserverRegistration {
+    if (comptime @TypeOf(plugin) == @TypeOf(null)) {
+        return .{
+            .event = hash(eventPayload(@TypeOf(function), 0)),
+            .entry = .{ .function = observerInvoker(function) },
+        };
+    } else {
+        const Plugin = pluginType(@TypeOf(plugin));
+        validatePluginReceiver(Plugin, @TypeOf(function), "observer");
+        const typed_plugin: *Plugin = plugin;
+        return .{
+            .event = hash(eventPayload(@TypeOf(function), 1)),
+            .entry = .{ .plugin_function = .{
+                .plugin = typed_plugin,
+                .function = pluginObserverInvoker(Plugin, function),
+            } },
+        };
+    }
+}
+
+pub fn buildSystemEntry(comptime function: anytype, plugin: anytype) SystemEntry {
     if (comptime @TypeOf(plugin) == @TypeOf(null)) {
         return .{ .function = systemInvoker(function) };
     } else {

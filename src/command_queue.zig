@@ -3,21 +3,29 @@ const std = @import("std");
 const World = @import("world.zig").World;
 const Entity = @import("entity.zig").Entity;
 
-pub const SpawnFunctions = struct {
+pub const ValueFunctions = struct {
     apply: *const fn (*anyopaque, *World, std.mem.Allocator) anyerror!void,
     destroy: *const fn (*anyopaque, std.mem.Allocator) void,
 };
 
 pub const RemoveEntityFunction = *const fn (*World, std.mem.Allocator, Entity) anyerror!void;
+pub const RemoveResourceFunction = *const fn (*World, std.mem.Allocator) void;
 
 const Command = union(enum) {
     spawn: struct {
         data: *anyopaque,
-        functions: SpawnFunctions,
+        functions: ValueFunctions,
     },
     despawn: struct {
         entity: Entity,
         remove: RemoveEntityFunction,
+    },
+    add_resource: struct {
+        data: *anyopaque,
+        functions: ValueFunctions,
+    },
+    remove_resource: struct {
+        remove: RemoveResourceFunction,
     },
 };
 
@@ -33,6 +41,8 @@ pub const CommandQueue = struct {
             switch (command) {
                 .spawn => |spawn_command| spawn_command.functions.destroy(spawn_command.data, allocator),
                 .despawn => {},
+                .add_resource => |add_command| add_command.functions.destroy(add_command.data, allocator),
+                .remove_resource => {},
             }
         }
         self.commands.deinit(allocator);
@@ -42,7 +52,7 @@ pub const CommandQueue = struct {
         self: *CommandQueue,
         allocator: std.mem.Allocator,
         components: anytype,
-        functions: SpawnFunctions,
+        functions: ValueFunctions,
     ) !void {
         const Components = @TypeOf(components);
 
@@ -68,6 +78,32 @@ pub const CommandQueue = struct {
         } });
     }
 
+    pub fn addResource(
+        self: *CommandQueue,
+        allocator: std.mem.Allocator,
+        value: anytype,
+        functions: ValueFunctions,
+    ) !void {
+        const Value = @TypeOf(value);
+
+        const data = try allocator.create(Value);
+        errdefer allocator.destroy(data);
+        data.* = value;
+
+        try self.commands.pushBack(allocator, .{ .add_resource = .{
+            .data = data,
+            .functions = functions,
+        } });
+    }
+
+    pub fn removeResource(
+        self: *CommandQueue,
+        allocator: std.mem.Allocator,
+        remove: RemoveResourceFunction,
+    ) !void {
+        try self.commands.pushBack(allocator, .{ .remove_resource = .{ .remove = remove } });
+    }
+
     pub fn flush(self: *CommandQueue, allocator: std.mem.Allocator, world: *World) !void {
         while (self.commands.popFront()) |command| {
             switch (command) {
@@ -76,6 +112,11 @@ pub const CommandQueue = struct {
                     try spawn_command.functions.apply(spawn_command.data, world, allocator);
                 },
                 .despawn => |despawn_command| try despawn_command.remove(world, allocator, despawn_command.entity),
+                .add_resource => |add_command| {
+                    defer add_command.functions.destroy(add_command.data, allocator);
+                    try add_command.functions.apply(add_command.data, world, allocator);
+                },
+                .remove_resource => |remove_command| remove_command.remove(world, allocator),
             }
         }
     }

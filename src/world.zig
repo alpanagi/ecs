@@ -16,8 +16,13 @@ const SystemRegistry = @import("system_registry.zig").SystemRegistry;
 const SystemEntry = @import("system_registry.zig").SystemEntry;
 const Event = @import("system_registry.zig").Event;
 const ResourceRegistry = @import("resource_registry.zig").ResourceRegistry;
+const ObserverEntry = @import("system_registry.zig").ObserverEntry;
+const buildSystemEntry = @import("system_registry.zig").buildSystemEntry;
+const buildObserverEntry = @import("system_registry.zig").buildObserverEntry;
 const CommandQueue = @import("command_queue.zig").CommandQueue;
-const SpawnFunctions = @import("command_queue.zig").SpawnFunctions;
+const ValueFunctions = @import("command_queue.zig").ValueFunctions;
+const RemoveResourceFunction = @import("command_queue.zig").RemoveResourceFunction;
+const RegistrationQueue = @import("registration_queue.zig").RegistrationQueue;
 
 pub const World = struct {
     archetypes: std.ArrayList(Archetype),
@@ -32,6 +37,7 @@ pub const World = struct {
     plugin_registry: PluginRegistry,
     resource_registry: ResourceRegistry,
     command_queue: CommandQueue,
+    registration_queue: RegistrationQueue,
 
     pub fn init() World {
         return .{
@@ -44,6 +50,7 @@ pub const World = struct {
             .plugin_registry = PluginRegistry.init(),
             .resource_registry = ResourceRegistry.init(),
             .command_queue = CommandQueue.init(),
+            .registration_queue = RegistrationQueue.init(),
         };
     }
 
@@ -52,6 +59,7 @@ pub const World = struct {
         self.resource_registry.deinit(allocator);
         self.system_registry.deinit(allocator);
         self.command_queue.deinit(allocator);
+        self.registration_queue.deinit(allocator);
 
         for (self.archetypes.items) |*archetype| archetype.deinit(allocator);
 
@@ -62,7 +70,7 @@ pub const World = struct {
         self.entity_free_list.deinit(allocator);
     }
 
-    fn addEntity(self: *World, allocator: std.mem.Allocator, components: anytype) !Entity {
+    pub fn addEntity(self: *World, allocator: std.mem.Allocator, components: anytype) !Entity {
         const fields = std.meta.fields(@TypeOf(components));
 
         const component_types: [fields.len]type = comptime blk: {
@@ -95,7 +103,7 @@ pub const World = struct {
         return entity;
     }
 
-    fn removeEntity(self: *World, allocator: std.mem.Allocator, entity: Entity) !void {
+    pub fn removeEntity(self: *World, allocator: std.mem.Allocator, entity: Entity) !void {
         if (entity.id >= self.entity_generations.items.len) return;
         if (self.entity_generations.items[entity.id] != entity.generation) return;
 
@@ -136,14 +144,6 @@ pub const World = struct {
         return self.archetypes.items[archetype_id].getComponents(archetype_slot, components);
     }
 
-    pub fn spawn(self: *World, allocator: std.mem.Allocator, components: anytype) !void {
-        try self.command_queue.spawn(allocator, components, spawnFunctions(@TypeOf(components)));
-    }
-
-    pub fn despawn(self: *World, allocator: std.mem.Allocator, entity: Entity) !void {
-        try self.command_queue.despawn(allocator, entity, World.removeEntity);
-    }
-
     pub fn addSystem(
         self: *World,
         allocator: std.mem.Allocator,
@@ -154,7 +154,13 @@ pub const World = struct {
         try self.system_registry.registerSystem(allocator, hashBytes(group), function, plugin);
     }
 
+    fn flushSystemRegistrations(self: *World, allocator: std.mem.Allocator) !void {
+        try self.registration_queue.flush(allocator, &self.system_registry);
+    }
+
     pub fn runSystems(self: *World, allocator: std.mem.Allocator) !void {
+        try self.flushSystemRegistrations(allocator);
+
         self.system_registry.runOneShotSystems(allocator, self);
         try self.command_queue.flush(allocator, self);
 
@@ -248,7 +254,7 @@ pub const World = struct {
     }
 };
 
-fn spawnFunctions(comptime Components: type) SpawnFunctions {
+fn spawnFunctions(comptime Components: type) ValueFunctions {
     return .{
         .apply = struct {
             fn call(data: *anyopaque, world: *World, allocator: std.mem.Allocator) !void {
@@ -263,6 +269,31 @@ fn spawnFunctions(comptime Components: type) SpawnFunctions {
             }
         }.call,
     };
+}
+
+fn addResourceFunctions(comptime T: type) ValueFunctions {
+    return .{
+        .apply = struct {
+            fn call(data: *anyopaque, world: *World, allocator: std.mem.Allocator) !void {
+                const typed: *T = @ptrCast(@alignCast(data));
+                try world.addResource(allocator, T, typed.*);
+            }
+        }.call,
+        .destroy = struct {
+            fn call(data: *anyopaque, allocator: std.mem.Allocator) void {
+                const typed: *T = @ptrCast(@alignCast(data));
+                allocator.destroy(typed);
+            }
+        }.call,
+    };
+}
+
+fn removeResourceFunction(comptime T: type) RemoveResourceFunction {
+    return struct {
+        fn call(world: *World, allocator: std.mem.Allocator) void {
+            world.removeResource(allocator, T);
+        }
+    }.call;
 }
 
 fn lifecycleFunctionsFor(comptime component: type) LifecycleFunctions {
@@ -325,8 +356,82 @@ pub fn Query(comptime components: []const type) type {
         pub fn iterator(self: @This()) Iterator {
             return .{ .world = self.world };
         }
+
+        pub fn get(self: @This(), entity: Entity) !EntityComponents(components) {
+            return self.world.getEntity(entity, components);
+        }
     };
 }
+
+pub const Commands = struct {
+    world: *World,
+    allocator: std.mem.Allocator,
+
+    pub fn fromWorld(allocator: std.mem.Allocator, world: *World) Commands {
+        return .{ .world = world, .allocator = allocator };
+    }
+
+    pub fn spawn(self: Commands, components: anytype) !void {
+        try self.world.command_queue.spawn(
+            self.allocator,
+            components,
+            spawnFunctions(@TypeOf(components)),
+        );
+    }
+
+    pub fn despawn(self: Commands, entity: Entity) !void {
+        try self.world.command_queue.despawn(self.allocator, entity, World.removeEntity);
+    }
+
+    pub fn trigger(self: Commands, event: anytype) void {
+        self.world.trigger(self.allocator, event);
+    }
+
+    pub fn addResource(self: Commands, comptime T: type, value: T) !void {
+        try self.world.command_queue.addResource(self.allocator, value, addResourceFunctions(T));
+    }
+
+    pub fn removeResource(self: Commands, comptime T: type) !void {
+        try self.world.command_queue.removeResource(self.allocator, removeResourceFunction(T));
+    }
+
+    pub fn addSystem(
+        self: Commands,
+        group: []const u8,
+        comptime function: anytype,
+        plugin: anytype,
+    ) !void {
+        try self.world.registration_queue.addSystem(
+            self.allocator,
+            hashBytes(group),
+            buildSystemEntry(function, plugin),
+        );
+    }
+
+    pub fn addOneShotSystem(
+        self: Commands,
+        comptime function: anytype,
+        plugin: anytype,
+    ) !void {
+        try self.world.registration_queue.addOneShotSystem(
+            self.allocator,
+            buildSystemEntry(function, plugin),
+        );
+    }
+
+    pub fn addObserver(
+        self: Commands,
+        comptime function: anytype,
+        plugin: anytype,
+    ) !void {
+        const registration = buildObserverEntry(function, plugin);
+        try self.world.registration_queue.addObserver(
+            self.allocator,
+            registration.event,
+            registration.entry,
+        );
+    }
+};
 
 pub fn Resource(comptime T: type) type {
     return struct {
@@ -1420,7 +1525,7 @@ test "a plugin's build can register a resource, read later by a system" {
     try std.testing.expectApproxEqAbs(@as(f32, 0.8), color.r, 0.0001);
 }
 
-test "World.spawn defers entity creation until the command queue is flushed" {
+test "Commands.spawn defers entity creation until the command queue is flushed" {
     const allocator = std.testing.allocator;
 
     const Position = struct { x: f32, y: f32 };
@@ -1428,7 +1533,9 @@ test "World.spawn defers entity creation until the command queue is flushed" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    try world.spawn(allocator, .{Position{ .x = 1, .y = 2 }});
+    const commands = Commands.fromWorld(allocator, &world);
+
+    try commands.spawn(.{Position{ .x = 1, .y = 2 }});
     try std.testing.expectEqual(0, world.archetypes.items.len);
 
     try world.command_queue.flush(allocator, &world);
@@ -1436,7 +1543,7 @@ test "World.spawn defers entity creation until the command queue is flushed" {
     try std.testing.expectEqual(1, world.archetypes.items.len);
 }
 
-test "World.despawn defers entity removal until the command queue is flushed" {
+test "Commands.despawn defers entity removal until the command queue is flushed" {
     const allocator = std.testing.allocator;
 
     const Value = struct { value: u64 };
@@ -1446,7 +1553,9 @@ test "World.despawn defers entity removal until the command queue is flushed" {
 
     const entity = try world.addEntity(allocator, .{Value{ .value = 1 }});
 
-    try world.despawn(allocator, entity);
+    const commands = Commands.fromWorld(allocator, &world);
+
+    try commands.despawn(entity);
     try std.testing.expectEqual(0, world.entity_free_list.items.len);
 
     try world.command_queue.flush(allocator, &world);
@@ -1454,12 +1563,26 @@ test "World.despawn defers entity removal until the command queue is flushed" {
     try std.testing.expectEqual(1, world.entity_free_list.items.len);
 }
 
+test "World.addEntity creates the entity immediately" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    _ = try world.addEntity(allocator, .{Position{ .x = 1, .y = 2 }});
+
+    try std.testing.expectEqual(1, world.archetypes.items.len);
+    try std.testing.expectEqual(1, world.archetypes.items[0].entity_count);
+}
+
 test "World.runSystems flushes commands queued by a system after each group" {
     const Position = struct { x: f32, y: f32 };
 
     const system = struct {
-        fn call(world: *World, allocator: std.mem.Allocator) !void {
-            try world.spawn(allocator, .{Position{ .x = 1, .y = 2 }});
+        fn call(commands: Commands) !void {
+            try commands.spawn(.{Position{ .x = 1, .y = 2 }});
         }
     }.call;
 
@@ -1582,7 +1705,7 @@ test "World.removeEntity fires Destroying while the component is still readable"
     try std.testing.expectEqual(Position{ .x = 1, .y = 2 }, State.observed);
 }
 
-test "World.spawn triggers Added once the command queue is flushed" {
+test "Commands.spawn triggers Added once the command queue is flushed" {
     const Position = struct { x: f32, y: f32 };
 
     const State = struct {
@@ -1598,10 +1721,702 @@ test "World.spawn triggers Added once the command queue is flushed" {
     defer world.deinit(std.testing.allocator);
 
     try world.addObserver(std.testing.allocator, onPositionAdded, null);
-    try world.spawn(std.testing.allocator, .{Position{ .x = 1, .y = 2 }});
+    try Commands.fromWorld(std.testing.allocator, &world).spawn(.{Position{ .x = 1, .y = 2 }});
     try std.testing.expectEqual(null, State.added_entity);
 
     try world.runSystems(std.testing.allocator);
 
     try std.testing.expect(State.added_entity != null);
+}
+
+test "a system registered through Commands into an existing group first runs on the next frame" {
+    const allocator = std.testing.allocator;
+
+    const system_count = 32;
+
+    const State = struct {
+        var registered: bool = false;
+        var registrar_calls: usize = 0;
+        var bystander_calls: usize = 0;
+        var added_calls: usize = 0;
+    };
+    State.registered = false;
+    State.registrar_calls = 0;
+    State.bystander_calls = 0;
+    State.added_calls = 0;
+
+    const Systems = struct {
+        fn added() void {
+            State.added_calls += 1;
+        }
+
+        fn registrar(commands: Commands) !void {
+            State.registrar_calls += 1;
+            if (State.registered) return;
+            State.registered = true;
+            for (0..system_count) |_| try commands.addSystem("update", added, null);
+        }
+
+        fn bystander() void {
+            State.bystander_calls += 1;
+        }
+    };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try world.addSystem(allocator, "update", Systems.registrar, null);
+    try world.addSystem(allocator, "update", Systems.bystander, null);
+
+    try world.runSystems(allocator);
+    try std.testing.expectEqual(1, State.registrar_calls);
+    try std.testing.expectEqual(1, State.bystander_calls);
+    try std.testing.expectEqual(0, State.added_calls);
+
+    try world.runSystems(allocator);
+    try std.testing.expectEqual(2, State.registrar_calls);
+    try std.testing.expectEqual(2, State.bystander_calls);
+    try std.testing.expectEqual(system_count, State.added_calls);
+}
+
+test "a system registered through Commands into a new group first runs on the next frame" {
+    const allocator = std.testing.allocator;
+
+    const group_count = 32;
+
+    const State = struct {
+        var registered: bool = false;
+        var added_calls: usize = 0;
+    };
+    State.registered = false;
+    State.added_calls = 0;
+
+    const Systems = struct {
+        fn added() void {
+            State.added_calls += 1;
+        }
+
+        fn registrar(commands: Commands) !void {
+            if (State.registered) return;
+            State.registered = true;
+            for (0..group_count) |index| {
+                var buffer: [16]u8 = undefined;
+                const group = try std.fmt.bufPrint(&buffer, "group{d}", .{index});
+                try commands.addSystem(group, added, null);
+            }
+        }
+    };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try world.addSystem(allocator, "update", Systems.registrar, null);
+
+    try world.runSystems(allocator);
+    try std.testing.expectEqual(1, world.system_registry.groups.count());
+    try std.testing.expectEqual(0, State.added_calls);
+
+    try world.runSystems(allocator);
+    try std.testing.expectEqual(group_count + 1, world.system_registry.groups.count());
+    try std.testing.expectEqual(group_count, State.added_calls);
+}
+
+test "a one-shot system registered through Commands runs on the next frame" {
+    const allocator = std.testing.allocator;
+
+    const State = struct {
+        var first_calls: usize = 0;
+        var second_calls: usize = 0;
+    };
+    State.first_calls = 0;
+    State.second_calls = 0;
+
+    const Systems = struct {
+        fn second() void {
+            State.second_calls += 1;
+        }
+
+        fn first(commands: Commands) !void {
+            State.first_calls += 1;
+            try commands.addOneShotSystem(second, null);
+        }
+    };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try world.addOneShotSystem(allocator, Systems.first, null);
+
+    try world.runSystems(allocator);
+    try std.testing.expectEqual(1, State.first_calls);
+    try std.testing.expectEqual(0, State.second_calls);
+
+    try world.runSystems(allocator);
+    try std.testing.expectEqual(1, State.first_calls);
+    try std.testing.expectEqual(1, State.second_calls);
+
+    try world.runSystems(allocator);
+    try std.testing.expectEqual(1, State.first_calls);
+    try std.testing.expectEqual(1, State.second_calls);
+}
+
+test "an observer registering observers for its own event does not disturb the running dispatch" {
+    const allocator = std.testing.allocator;
+
+    const observer_count = 16;
+
+    const Damage = struct { amount: u32 };
+
+    const State = struct {
+        var registered: bool = false;
+        var registrar_calls: usize = 0;
+        var bystander_calls: usize = 0;
+        var added_calls: usize = 0;
+    };
+    State.registered = false;
+    State.registrar_calls = 0;
+    State.bystander_calls = 0;
+    State.added_calls = 0;
+
+    const Observers = struct {
+        fn added(_: Event(Damage)) void {
+            State.added_calls += 1;
+        }
+
+        fn registrar(commands: Commands, _: Event(Damage)) !void {
+            State.registrar_calls += 1;
+            if (State.registered) return;
+            State.registered = true;
+            for (0..observer_count) |_| try commands.addObserver(added, null);
+        }
+
+        fn bystander(_: Event(Damage)) void {
+            State.bystander_calls += 1;
+        }
+    };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try world.addObserver(allocator, Observers.registrar, null);
+    try world.addObserver(allocator, Observers.bystander, null);
+
+    world.trigger(allocator, Damage{ .amount = 1 });
+    try std.testing.expectEqual(1, State.registrar_calls);
+    try std.testing.expectEqual(1, State.bystander_calls);
+    try std.testing.expectEqual(0, State.added_calls);
+
+    try world.runSystems(allocator);
+
+    world.trigger(allocator, Damage{ .amount = 1 });
+    try std.testing.expectEqual(2, State.registrar_calls);
+    try std.testing.expectEqual(2, State.bystander_calls);
+    try std.testing.expectEqual(observer_count, State.added_calls);
+}
+
+test "flushSystemRegistrations applies queued registrations without running a frame" {
+    const allocator = std.testing.allocator;
+
+    const State = struct {
+        var calls: usize = 0;
+    };
+    State.calls = 0;
+
+    const system = struct {
+        fn call() void {
+            State.calls += 1;
+        }
+    }.call;
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try Commands.fromWorld(allocator, &world).addSystem("update", system, null);
+    try std.testing.expectEqual(0, world.system_registry.groups.count());
+
+    try world.flushSystemRegistrations(allocator);
+
+    try std.testing.expectEqual(1, world.system_registry.groups.count());
+    try std.testing.expectEqual(0, State.calls);
+}
+
+test "a plugin's build can register systems, one-shot systems and observers through Commands" {
+    const allocator = std.testing.allocator;
+
+    const Damage = struct { amount: u32 };
+
+    const Plugin = struct {
+        updates: usize = 0,
+        setups: usize = 0,
+        damage_seen: u32 = 0,
+
+        pub fn build(self: *@This(), commands: Commands) !void {
+            try commands.addSystem("update", update, self);
+            try commands.addOneShotSystem(setup, self);
+            try commands.addObserver(onDamage, self);
+        }
+
+        fn update(self: *@This()) void {
+            self.updates += 1;
+        }
+
+        fn setup(self: *@This()) void {
+            self.setups += 1;
+        }
+
+        fn onDamage(self: *@This(), event: Event(Damage)) !void {
+            self.damage_seen += event.value.amount;
+        }
+    };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try world.addPlugin(allocator, Plugin);
+
+    try world.runSystems(allocator);
+    try world.runSystems(allocator);
+    world.trigger(allocator, Damage{ .amount = 7 });
+
+    const plugin: *Plugin = @ptrCast(@alignCast(world.plugin_registry.plugins.items[0].plugin));
+    try std.testing.expectEqual(2, plugin.updates);
+    try std.testing.expectEqual(1, plugin.setups);
+    try std.testing.expectEqual(7, plugin.damage_seen);
+}
+
+test "a plugin system registering a plugin system through Commands binds the same plugin" {
+    const allocator = std.testing.allocator;
+
+    const Plugin = struct {
+        registered: bool = false,
+        registrar_calls: usize = 0,
+        added_calls: usize = 0,
+
+        pub fn build(self: *@This(), commands: Commands) !void {
+            try commands.addSystem("update", registrar, self);
+        }
+
+        fn registrar(self: *@This(), commands: Commands) !void {
+            self.registrar_calls += 1;
+            if (self.registered) return;
+            self.registered = true;
+            try commands.addSystem("late", added, self);
+        }
+
+        fn added(self: *@This()) void {
+            self.added_calls += 1;
+        }
+    };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try world.addPlugin(allocator, Plugin);
+    const plugin: *Plugin = @ptrCast(@alignCast(world.plugin_registry.plugins.items[0].plugin));
+
+    try world.runSystems(allocator);
+    try std.testing.expectEqual(1, plugin.registrar_calls);
+    try std.testing.expectEqual(0, plugin.added_calls);
+
+    try world.runSystems(allocator);
+    try std.testing.expectEqual(2, plugin.registrar_calls);
+    try std.testing.expectEqual(1, plugin.added_calls);
+}
+
+test "Commands.addResource defers registration until the command queue is flushed" {
+    const allocator = std.testing.allocator;
+
+    const Config = struct { scale: f32 };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try Commands.fromWorld(allocator, &world).addResource(Config, .{ .scale = 2 });
+    try std.testing.expectEqual(null, world.getResource(Config));
+
+    try world.command_queue.flush(allocator, &world);
+
+    try std.testing.expectEqual(@as(f32, 2), world.getResource(Config).?.scale);
+}
+
+test "Commands.removeResource defers removal until the command queue is flushed" {
+    const allocator = std.testing.allocator;
+
+    const State = struct {
+        var deinits: usize = 0;
+    };
+    State.deinits = 0;
+
+    const Tracked = struct {
+        pub fn deinit(_: *@This()) void {
+            State.deinits += 1;
+        }
+    };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try world.addResource(allocator, Tracked, .{});
+
+    try Commands.fromWorld(allocator, &world).removeResource(Tracked);
+    try std.testing.expectEqual(0, State.deinits);
+    try std.testing.expect(world.getResource(Tracked) != null);
+
+    try world.command_queue.flush(allocator, &world);
+
+    try std.testing.expectEqual(1, State.deinits);
+    try std.testing.expectEqual(null, world.getResource(Tracked));
+}
+
+test "a resource removed through Commands stays readable for the rest of the group" {
+    const allocator = std.testing.allocator;
+
+    const Config = struct { scale: f32 };
+
+    const State = struct {
+        var seen_after_remove: ?f32 = null;
+    };
+    State.seen_after_remove = null;
+
+    const Systems = struct {
+        fn remover(commands: Commands, config: Resource(Config)) !void {
+            try commands.removeResource(Config);
+            config.value.scale += 1;
+        }
+
+        fn reader(world: *World) void {
+            if (world.getResource(Config)) |config| State.seen_after_remove = config.scale;
+        }
+    };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try world.addResource(allocator, Config, .{ .scale = 1 });
+    try world.addSystem(allocator, "update", Systems.remover, null);
+    try world.addSystem(allocator, "update", Systems.reader, null);
+
+    try world.runSystems(allocator);
+
+    try std.testing.expectEqual(@as(f32, 2), State.seen_after_remove.?);
+    try std.testing.expectEqual(null, world.getResource(Config));
+}
+
+test "a resource added through Commands is visible to the next group" {
+    const allocator = std.testing.allocator;
+
+    const Config = struct { scale: f32 };
+
+    const State = struct {
+        var seen: ?f32 = null;
+    };
+    State.seen = null;
+
+    const Systems = struct {
+        fn producer(commands: Commands) !void {
+            try commands.addResource(Config, .{ .scale = 3 });
+        }
+
+        fn consumer(world: *World) void {
+            if (world.getResource(Config)) |config| State.seen = config.scale;
+        }
+    };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try world.addSystem(allocator, "first", Systems.producer, null);
+    try world.addSystem(allocator, "second", Systems.consumer, null);
+
+    try world.runSystems(allocator);
+
+    try std.testing.expectEqual(@as(f32, 3), State.seen.?);
+}
+
+test "a plugin's build can register a resource through Commands" {
+    const allocator = std.testing.allocator;
+
+    const Config = struct { scale: f32 };
+
+    const State = struct {
+        var seen: f32 = 0;
+    };
+    State.seen = 0;
+
+    const Plugin = struct {
+        pub fn build(_: *@This(), commands: Commands) !void {
+            try commands.addResource(Config, .{ .scale = 4 });
+            try commands.addSystem("update", read, null);
+        }
+
+        fn read(config: Resource(Config)) void {
+            State.seen = config.value.scale;
+        }
+    };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try world.addPlugin(allocator, Plugin);
+    try std.testing.expectEqual(null, world.getResource(Config));
+
+    try world.runSystems(allocator);
+
+    try std.testing.expectEqual(@as(f32, 4), State.seen);
+}
+
+test "CommandQueue.deinit frees an unflushed addResource value without applying it" {
+    const allocator = std.testing.allocator;
+
+    const Config = struct { scale: f32 };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try Commands.fromWorld(allocator, &world).addResource(Config, .{ .scale = 1 });
+
+    world.command_queue.deinit(allocator);
+    world.command_queue = CommandQueue.init();
+
+    try std.testing.expectEqual(null, world.getResource(Config));
+}
+
+test "Commands.trigger dispatches observers synchronously" {
+    const allocator = std.testing.allocator;
+
+    const Damage = struct { amount: u32 };
+
+    const State = struct {
+        var seen: u32 = 0;
+        var ran_before_system_returned: bool = false;
+    };
+    State.seen = 0;
+    State.ran_before_system_returned = false;
+
+    const onDamage = struct {
+        fn call(event: Event(Damage)) void {
+            State.seen = event.value.amount;
+        }
+    }.call;
+    const system = struct {
+        fn call(commands: Commands) void {
+            commands.trigger(Damage{ .amount = 7 });
+            State.ran_before_system_returned = State.seen == 7;
+        }
+    }.call;
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try world.addObserver(allocator, onDamage, null);
+    try world.addSystem(allocator, "update", system, null);
+
+    try world.runSystems(allocator);
+
+    try std.testing.expectEqual(7, State.seen);
+    try std.testing.expect(State.ran_before_system_returned);
+}
+
+test "an observer reached through Commands.trigger can queue deferred work" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+    const Spawned = struct { x: f32 };
+
+    const State = struct {
+        var entities_at_trigger: usize = 0;
+    };
+    State.entities_at_trigger = 0;
+
+    const onSpawned = struct {
+        fn call(commands: Commands, event: Event(Spawned)) !void {
+            try commands.spawn(.{Position{ .x = event.value.x, .y = 0 }});
+        }
+    }.call;
+    const system = struct {
+        fn call(commands: Commands, world: *World) !void {
+            commands.trigger(Spawned{ .x = 5 });
+            State.entities_at_trigger = world.archetypes.items.len;
+        }
+    }.call;
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try world.addObserver(allocator, onSpawned, null);
+    try world.addSystem(allocator, "update", system, null);
+
+    try world.runSystems(allocator);
+
+    try std.testing.expectEqual(0, State.entities_at_trigger);
+    try std.testing.expectEqual(1, world.archetypes.items.len);
+    try std.testing.expectEqual(1, world.archetypes.items[0].entity_count);
+}
+
+test "an observer reached through Commands.trigger can register another observer" {
+    const allocator = std.testing.allocator;
+
+    const Damage = struct { amount: u32 };
+
+    const State = struct {
+        var registered: bool = false;
+        var registrar_calls: usize = 0;
+        var added_calls: usize = 0;
+    };
+    State.registered = false;
+    State.registrar_calls = 0;
+    State.added_calls = 0;
+
+    const Observers = struct {
+        fn added(_: Event(Damage)) void {
+            State.added_calls += 1;
+        }
+
+        fn registrar(commands: Commands, _: Event(Damage)) !void {
+            State.registrar_calls += 1;
+            if (State.registered) return;
+            State.registered = true;
+            for (0..16) |_| try commands.addObserver(added, null);
+        }
+    };
+    const system = struct {
+        fn call(commands: Commands) void {
+            commands.trigger(Damage{ .amount = 1 });
+        }
+    }.call;
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try world.addObserver(allocator, Observers.registrar, null);
+    try world.addSystem(allocator, "update", system, null);
+
+    try world.runSystems(allocator);
+    try std.testing.expectEqual(1, State.registrar_calls);
+    try std.testing.expectEqual(0, State.added_calls);
+
+    try world.runSystems(allocator);
+    try std.testing.expectEqual(2, State.registrar_calls);
+    try std.testing.expectEqual(16, State.added_calls);
+}
+
+test "Query.get returns pointers to the components the query declares" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+    const Velocity = struct { dx: f32, dy: f32 };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    const entity = try world.addEntity(
+        allocator,
+        .{ Position{ .x = 1, .y = 2 }, Velocity{ .dx = 3, .dy = 4 } },
+    );
+
+    const position, const velocity = try world.query(&.{ Position, Velocity }).get(entity);
+
+    try std.testing.expectEqual(Position{ .x = 1, .y = 2 }, position.*);
+    try std.testing.expectEqual(Velocity{ .dx = 3, .dy = 4 }, velocity.*);
+}
+
+test "Query.get writes through to the stored components" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    const entity = try world.addEntity(allocator, .{Position{ .x = 1, .y = 0 }});
+
+    const position = try world.query(&.{Position}).get(entity);
+    position[0].x += 10;
+
+    const reread = try world.getEntity(entity, &.{Position});
+    try std.testing.expectEqual(@as(f32, 11), reread[0].x);
+}
+
+test "Query.get returns Error.UnknownComponent for an entity outside the query" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+    const Velocity = struct { dx: f32, dy: f32 };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    const entity = try world.addEntity(allocator, .{Position{ .x = 1, .y = 2 }});
+
+    try std.testing.expectError(
+        Error.UnknownComponent,
+        world.query(&.{Velocity}).get(entity),
+    );
+}
+
+test "Query.get returns Error.InvalidEntity for an out-of-range entity index" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try std.testing.expectError(
+        Error.InvalidEntity,
+        world.query(&.{Position}).get(.{ .id = 999, .generation = 0 }),
+    );
+}
+
+test "Query.get returns Error.InvalidEntity for a despawned entity" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    const entity = try world.addEntity(allocator, .{Position{ .x = 1, .y = 2 }});
+    try world.removeEntity(allocator, entity);
+
+    try std.testing.expectError(
+        Error.InvalidEntity,
+        world.query(&.{Position}).get(entity),
+    );
+}
+
+test "a system can follow an Entity stored in a component without taking *World" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+    const Target = struct { entity: Entity };
+
+    const State = struct {
+        var target_x: f32 = 0;
+    };
+    State.target_x = 0;
+
+    const system = struct {
+        fn call(targets: Query(&.{Target}), positions: Query(&.{Position})) !void {
+            var it = targets.iterator();
+            while (it.next()) |row| {
+                const position = try positions.get(row[0].entity);
+                position[0].x += 1;
+                State.target_x = position[0].x;
+            }
+        }
+    }.call;
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    const target = try world.addEntity(allocator, .{Position{ .x = 5, .y = 0 }});
+    _ = try world.addEntity(allocator, .{Target{ .entity = target }});
+
+    try world.addSystem(allocator, "update", system, null);
+    try world.runSystems(allocator);
+
+    try std.testing.expectEqual(@as(f32, 6), State.target_x);
+    const position = try world.getEntity(target, &.{Position});
+    try std.testing.expectEqual(@as(f32, 6), position[0].x);
 }
