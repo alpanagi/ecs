@@ -4,8 +4,8 @@ const Archetype = @import("archetype.zig").Archetype;
 const LifecycleFunctions = @import("archetype.zig").LifecycleFunctions;
 const Entity = @import("entity.zig").Entity;
 const Error = @import("error.zig").Error;
-const Added = @import("lifecycle.zig").Added;
-const Destroying = @import("lifecycle.zig").Destroying;
+const component_events = @import("lifecycle.zig").component;
+const resource_events = @import("lifecycle.zig").resource;
 const hash = @import("hash.zig").hash;
 const hashBytes = @import("hash.zig").hashBytes;
 const sortMultiple = @import("sort.zig").sortMultiple;
@@ -206,7 +206,12 @@ pub const World = struct {
         comptime T: type,
         value: T,
     ) !void {
+        const replacing = self.resource_registry.getResource(T) != null;
+        if (replacing) self.trigger(allocator, resource_events.Destroying(T){});
+
         try self.resource_registry.addResource(allocator, T, value);
+
+        self.trigger(allocator, resource_events.Added(T){});
     }
 
     pub fn getResource(self: *World, comptime T: type) ?*T {
@@ -214,6 +219,9 @@ pub const World = struct {
     }
 
     pub fn removeResource(self: *World, allocator: std.mem.Allocator, comptime T: type) void {
+        if (self.resource_registry.getResource(T) == null) return;
+
+        self.trigger(allocator, resource_events.Destroying(T){});
         self.resource_registry.removeResource(allocator, T);
     }
 
@@ -302,13 +310,13 @@ fn lifecycleFunctionsFor(comptime component: type) LifecycleFunctions {
         .added = struct {
             fn call(world_ptr: *anyopaque, allocator: std.mem.Allocator, entity: Entity) void {
                 const world: *World = @ptrCast(@alignCast(world_ptr));
-                world.trigger(allocator, Added(component){ .entity = entity });
+                world.trigger(allocator, component_events.Added(component){ .entity = entity });
             }
         }.call,
         .destroying = struct {
             fn call(world_ptr: *anyopaque, allocator: std.mem.Allocator, entity: Entity) void {
                 const world: *World = @ptrCast(@alignCast(world_ptr));
-                world.trigger(allocator, Destroying(component){ .entity = entity });
+                world.trigger(allocator, component_events.Destroying(component){ .entity = entity });
             }
         }.call,
     };
@@ -1624,12 +1632,12 @@ test "World.addEntity triggers an Added event for each component type" {
         var velocity_entity: ?Entity = null;
     };
     const onPositionAdded = struct {
-        fn call(event: Event(Added(Position))) !void {
+        fn call(event: Event(component_events.Added(Position))) !void {
             State.position_entity = event.value.entity;
         }
     }.call;
     const onVelocityAdded = struct {
-        fn call(event: Event(Added(Velocity))) !void {
+        fn call(event: Event(component_events.Added(Velocity))) !void {
             State.velocity_entity = event.value.entity;
         }
     }.call;
@@ -1656,7 +1664,7 @@ test "World.addEntity does not trigger Added for a component type with no observ
         var position_entity: ?Entity = null;
     };
     const onPositionAdded = struct {
-        fn call(event: Event(Added(Position))) !void {
+        fn call(event: Event(component_events.Added(Position))) !void {
             State.position_entity = event.value.entity;
         }
     }.call;
@@ -1680,7 +1688,7 @@ test "World.removeEntity triggers a Destroying event for each component type" {
         var destroying_entity: ?Entity = null;
     };
     const onPositionDestroying = struct {
-        fn call(event: Event(Destroying(Position))) !void {
+        fn call(event: Event(component_events.Destroying(Position))) !void {
             State.destroying_entity = event.value.entity;
         }
     }.call;
@@ -1705,7 +1713,7 @@ test "World.removeEntity fires Destroying while the component is still readable"
         var observed: ?Position = null;
     };
     const onPositionDestroying = struct {
-        fn call(positions: Query(&.{Position}), event: Event(Destroying(Position))) !void {
+        fn call(positions: Query(&.{Position}), event: Event(component_events.Destroying(Position))) !void {
             const components = positions.get(event.value.entity) catch return;
             State.observed = components[0].*;
         }
@@ -1729,7 +1737,7 @@ test "Commands.spawn triggers Added once the command queue is flushed" {
         var added_entity: ?Entity = null;
     };
     const onPositionAdded = struct {
-        fn call(event: Event(Added(Position))) !void {
+        fn call(event: Event(component_events.Added(Position))) !void {
             State.added_entity = event.value.entity;
         }
     }.call;
@@ -2534,4 +2542,244 @@ test "a one-shot system sees entities its plugin's build spawned through Command
     try world.runSystems(allocator);
 
     try std.testing.expectEqual(1, State.seen);
+}
+
+test "World.addResource triggers a resource Added event" {
+    const allocator = std.testing.allocator;
+
+    const Config = struct { scale: f32 };
+
+    const State = struct {
+        var calls: usize = 0;
+    };
+    State.calls = 0;
+
+    const onAdded = struct {
+        fn call(_: Event(resource_events.Added(Config))) void {
+            State.calls += 1;
+        }
+    }.call;
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try world.addObserver(allocator, onAdded, null);
+    try world.addResource(allocator, Config, .{ .scale = 1 });
+
+    try std.testing.expectEqual(1, State.calls);
+}
+
+test "a resource Added observer can already read the resource" {
+    const allocator = std.testing.allocator;
+
+    const Config = struct { scale: f32 };
+
+    const State = struct {
+        var seen: ?f32 = null;
+    };
+    State.seen = null;
+
+    const onAdded = struct {
+        fn call(config: Resource(Config), _: Event(resource_events.Added(Config))) void {
+            State.seen = config.value.scale;
+        }
+    }.call;
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try world.addObserver(allocator, onAdded, null);
+    try world.addResource(allocator, Config, .{ .scale = 3 });
+
+    try std.testing.expectEqual(@as(f32, 3), State.seen.?);
+}
+
+test "World.removeResource triggers Destroying while the value is still readable" {
+    const allocator = std.testing.allocator;
+
+    const Config = struct { scale: f32 };
+
+    const State = struct {
+        var seen: ?f32 = null;
+    };
+    State.seen = null;
+
+    const onDestroying = struct {
+        fn call(config: Resource(Config), _: Event(resource_events.Destroying(Config))) void {
+            State.seen = config.value.scale;
+        }
+    }.call;
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try world.addObserver(allocator, onDestroying, null);
+    try world.addResource(allocator, Config, .{ .scale = 5 });
+    world.removeResource(allocator, Config);
+
+    try std.testing.expectEqual(@as(f32, 5), State.seen.?);
+    try std.testing.expectEqual(null, world.getResource(Config));
+}
+
+test "World.removeResource on an absent resource triggers nothing" {
+    const allocator = std.testing.allocator;
+
+    const Config = struct { scale: f32 };
+
+    const State = struct {
+        var calls: usize = 0;
+    };
+    State.calls = 0;
+
+    const onDestroying = struct {
+        fn call(_: Event(resource_events.Destroying(Config))) void {
+            State.calls += 1;
+        }
+    }.call;
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try world.addObserver(allocator, onDestroying, null);
+    world.removeResource(allocator, Config);
+
+    try std.testing.expectEqual(0, State.calls);
+}
+
+test "replacing a resource fires Destroying for the old value then Added for the new" {
+    const allocator = std.testing.allocator;
+
+    const Config = struct { scale: f32 };
+
+    const State = struct {
+        var log: [4]u8 = undefined;
+        var count: usize = 0;
+        var scale_at_destroying: ?f32 = null;
+        var scale_at_added: ?f32 = null;
+    };
+    State.count = 0;
+    State.scale_at_destroying = null;
+    State.scale_at_added = null;
+
+    const Handlers = struct {
+        fn onAdded(config: Resource(Config), _: Event(resource_events.Added(Config))) void {
+            State.log[State.count] = 1;
+            State.count += 1;
+            State.scale_at_added = config.value.scale;
+        }
+
+        fn onDestroying(config: Resource(Config), _: Event(resource_events.Destroying(Config))) void {
+            State.log[State.count] = 2;
+            State.count += 1;
+            State.scale_at_destroying = config.value.scale;
+        }
+    };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try world.addObserver(allocator, Handlers.onAdded, null);
+    try world.addObserver(allocator, Handlers.onDestroying, null);
+
+    try world.addResource(allocator, Config, .{ .scale = 1 });
+    try world.addResource(allocator, Config, .{ .scale = 2 });
+
+    try std.testing.expectEqualSlices(u8, &.{ 1, 2, 1 }, State.log[0..State.count]);
+    try std.testing.expectEqual(@as(f32, 1), State.scale_at_destroying.?);
+    try std.testing.expectEqual(@as(f32, 2), State.scale_at_added.?);
+}
+
+test "resource events do not fire for a component of the same type" {
+    const allocator = std.testing.allocator;
+
+    const Shared = struct { value: u32 };
+
+    const State = struct {
+        var resource_added: usize = 0;
+        var component_added: usize = 0;
+    };
+    State.resource_added = 0;
+    State.component_added = 0;
+
+    const Handlers = struct {
+        fn onResource(_: Event(resource_events.Added(Shared))) void {
+            State.resource_added += 1;
+        }
+
+        fn onComponent(_: Event(component_events.Added(Shared))) void {
+            State.component_added += 1;
+        }
+    };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try world.addObserver(allocator, Handlers.onResource, null);
+    try world.addObserver(allocator, Handlers.onComponent, null);
+
+    _ = try world.addEntity(allocator, .{Shared{ .value = 1 }});
+    try std.testing.expectEqual(1, State.component_added);
+    try std.testing.expectEqual(0, State.resource_added);
+
+    try world.addResource(allocator, Shared, .{ .value = 2 });
+    try std.testing.expectEqual(1, State.component_added);
+    try std.testing.expectEqual(1, State.resource_added);
+}
+
+test "a resource added through Commands fires Added at the flush" {
+    const allocator = std.testing.allocator;
+
+    const Config = struct { scale: f32 };
+
+    const State = struct {
+        var calls: usize = 0;
+    };
+    State.calls = 0;
+
+    const onAdded = struct {
+        fn call(_: Event(resource_events.Added(Config))) void {
+            State.calls += 1;
+        }
+    }.call;
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try world.addObserver(allocator, onAdded, null);
+    try Commands.fromWorld(allocator, &world).addResource(Config, .{ .scale = 1 });
+    try std.testing.expectEqual(0, State.calls);
+
+    try world.command_queue.flush(allocator, &world);
+
+    try std.testing.expectEqual(1, State.calls);
+}
+
+test "a resource removed through Commands fires Destroying at the flush" {
+    const allocator = std.testing.allocator;
+
+    const Config = struct { scale: f32 };
+
+    const State = struct {
+        var calls: usize = 0;
+    };
+    State.calls = 0;
+
+    const onDestroying = struct {
+        fn call(_: Event(resource_events.Destroying(Config))) void {
+            State.calls += 1;
+        }
+    }.call;
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try world.addObserver(allocator, onDestroying, null);
+    try world.addResource(allocator, Config, .{ .scale = 1 });
+
+    try Commands.fromWorld(allocator, &world).removeResource(Config);
+    try std.testing.expectEqual(0, State.calls);
+
+    try world.command_queue.flush(allocator, &world);
+
+    try std.testing.expectEqual(1, State.calls);
 }

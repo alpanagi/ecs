@@ -7,6 +7,6 @@ pub const Resource = @import("world.zig").Resource;
 pub const Event = @import("system_registry.zig").Event;
 
 pub const events = struct {
-    pub const Added = @import("lifecycle.zig").Added;
-    pub const Destroying = @import("lifecycle.zig").Destroying;
+    pub const component = @import("lifecycle.zig").component;
+    pub const resource = @import("lifecycle.zig").resource;
 };
