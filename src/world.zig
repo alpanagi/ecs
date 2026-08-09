@@ -384,10 +384,6 @@ pub const Commands = struct {
         try self.world.command_queue.despawn(self.allocator, entity, World.removeEntity);
     }
 
-    pub fn trigger(self: Commands, event: anytype) void {
-        self.world.trigger(self.allocator, event);
-    }
-
     pub fn addResource(self: Commands, comptime T: type, value: T) !void {
         try self.world.command_queue.addResource(self.allocator, value, addResourceFunctions(T));
     }
@@ -431,6 +427,19 @@ pub const Commands = struct {
             registration.event,
             registration.entry,
         );
+    }
+};
+
+pub const Observers = struct {
+    world: *World,
+    allocator: std.mem.Allocator,
+
+    pub fn fromWorld(allocator: std.mem.Allocator, world: *World) Observers {
+        return .{ .world = world, .allocator = allocator };
+    }
+
+    pub fn trigger(self: Observers, event: anytype) void {
+        self.world.trigger(self.allocator, event);
     }
 };
 
@@ -1886,7 +1895,7 @@ test "an observer registering observers for its own event does not disturb the r
     State.bystander_calls = 0;
     State.added_calls = 0;
 
-    const Observers = struct {
+    const Handlers = struct {
         fn added(_: Event(Damage)) void {
             State.added_calls += 1;
         }
@@ -1906,8 +1915,8 @@ test "an observer registering observers for its own event does not disturb the r
     var world = World.init();
     defer world.deinit(allocator);
 
-    try world.addObserver(allocator, Observers.registrar, null);
-    try world.addObserver(allocator, Observers.bystander, null);
+    try world.addObserver(allocator, Handlers.registrar, null);
+    try world.addObserver(allocator, Handlers.bystander, null);
 
     world.trigger(allocator, Damage{ .amount = 1 });
     try std.testing.expectEqual(1, State.registrar_calls);
@@ -2189,7 +2198,7 @@ test "CommandQueue.deinit frees an unflushed addResource value without applying 
     try std.testing.expectEqual(null, world.getResource(Config));
 }
 
-test "Commands.trigger dispatches observers synchronously" {
+test "Observers.trigger dispatches synchronously" {
     const allocator = std.testing.allocator;
 
     const Damage = struct { amount: u32 };
@@ -2207,8 +2216,8 @@ test "Commands.trigger dispatches observers synchronously" {
         }
     }.call;
     const system = struct {
-        fn call(commands: Commands) void {
-            commands.trigger(Damage{ .amount = 7 });
+        fn call(observers: Observers) void {
+            observers.trigger(Damage{ .amount = 7 });
             State.ran_before_system_returned = State.seen == 7;
         }
     }.call;
@@ -2225,7 +2234,7 @@ test "Commands.trigger dispatches observers synchronously" {
     try std.testing.expect(State.ran_before_system_returned);
 }
 
-test "an observer reached through Commands.trigger can queue deferred work" {
+test "an observer reached through Observers.trigger can queue deferred work" {
     const allocator = std.testing.allocator;
 
     const Position = struct { x: f32, y: f32 };
@@ -2242,8 +2251,8 @@ test "an observer reached through Commands.trigger can queue deferred work" {
         }
     }.call;
     const system = struct {
-        fn call(commands: Commands, positions: Query(&.{Position})) !void {
-            commands.trigger(Spawned{ .x = 5 });
+        fn call(observers: Observers, positions: Query(&.{Position})) !void {
+            observers.trigger(Spawned{ .x = 5 });
             var it = positions.iterator();
             while (it.next()) |_| State.entities_at_trigger += 1;
         }
@@ -2262,7 +2271,7 @@ test "an observer reached through Commands.trigger can queue deferred work" {
     try std.testing.expectEqual(1, world.archetypes.items[0].entity_count);
 }
 
-test "an observer reached through Commands.trigger can register another observer" {
+test "an observer reached through Observers.trigger can register another observer" {
     const allocator = std.testing.allocator;
 
     const Damage = struct { amount: u32 };
@@ -2276,7 +2285,7 @@ test "an observer reached through Commands.trigger can register another observer
     State.registrar_calls = 0;
     State.added_calls = 0;
 
-    const Observers = struct {
+    const Handlers = struct {
         fn added(_: Event(Damage)) void {
             State.added_calls += 1;
         }
@@ -2289,15 +2298,15 @@ test "an observer reached through Commands.trigger can register another observer
         }
     };
     const system = struct {
-        fn call(commands: Commands) void {
-            commands.trigger(Damage{ .amount = 1 });
+        fn call(observers: Observers) void {
+            observers.trigger(Damage{ .amount = 1 });
         }
     }.call;
 
     var world = World.init();
     defer world.deinit(allocator);
 
-    try world.addObserver(allocator, Observers.registrar, null);
+    try world.addObserver(allocator, Handlers.registrar, null);
     try world.addSystem(allocator, "update", system, null);
 
     try world.runSystems(allocator);
