@@ -322,6 +322,8 @@ fn observerInvoker(comptime function: anytype) ObserverFunction {
 }
 
 test "a system may declare only the parameters it needs, in any order" {
+    const Commands = @import("world.zig").Commands;
+
     const State = struct {
         var calls: [4]u8 = undefined;
         var count: usize = 0;
@@ -333,17 +335,17 @@ test "a system may declare only the parameters it needs, in any order" {
     };
 
     const both = struct {
-        fn call(_: *World, _: std.mem.Allocator) !void {
+        fn call(_: Commands, _: std.mem.Allocator) !void {
             State.record(1);
         }
     }.call;
     const reversed = struct {
-        fn call(_: std.mem.Allocator, _: *World) !void {
+        fn call(_: std.mem.Allocator, _: Commands) !void {
             State.record(2);
         }
     }.call;
-    const world_only = struct {
-        fn call(_: *World) !void {
+    const commands_only = struct {
+        fn call(_: Commands) !void {
             State.record(3);
         }
     }.call;
@@ -359,7 +361,7 @@ test "a system may declare only the parameters it needs, in any order" {
     defer world.deinit(std.testing.allocator);
     try world.system_registry.registerSystem(std.testing.allocator, 1, both, null);
     try world.system_registry.registerSystem(std.testing.allocator, 1, reversed, null);
-    try world.system_registry.registerSystem(std.testing.allocator, 1, world_only, null);
+    try world.system_registry.registerSystem(std.testing.allocator, 1, commands_only, null);
     try world.system_registry.registerSystem(std.testing.allocator, 1, nothing, null);
 
     try world.runSystems(std.testing.allocator);
@@ -401,30 +403,9 @@ test "any type declaring fromWorld can be a system parameter" {
     try std.testing.expectEqual(&world, State.world);
 }
 
-test "a system receives the world it was run against" {
-    const State = struct {
-        var seen: ?*World = null;
-    };
-    const system = struct {
-        fn call(world: *World) void {
-            State.seen = world;
-        }
-    }.call;
-
-    State.seen = null;
-
-    var world = World.init();
-    defer world.deinit(std.testing.allocator);
-    try world.system_registry.registerSystem(std.testing.allocator, 1, system, null);
-
-    try world.runSystems(std.testing.allocator);
-
-    try std.testing.expectEqual(&world, State.seen);
-}
-
 test "registerSystem creates a group on first use" {
     const system = struct {
-        fn call(_: *World, _: std.mem.Allocator) void {}
+        fn call(_: std.mem.Allocator) void {}
     }.call;
 
     var registry = SystemRegistry.init();
@@ -441,13 +422,13 @@ test "registerSystem appends to an existing group in call order" {
         var count: usize = 0;
     };
     const a = struct {
-        fn call(_: *World, _: std.mem.Allocator) !void {
+        fn call(_: std.mem.Allocator) !void {
             State.calls[State.count] = 1;
             State.count += 1;
         }
     }.call;
     const b = struct {
-        fn call(_: *World, _: std.mem.Allocator) !void {
+        fn call(_: std.mem.Allocator) !void {
             State.calls[State.count] = 2;
             State.count += 1;
         }
@@ -466,7 +447,7 @@ test "registerSystem binds the plugin pointer when provided" {
     const Plugin = struct {
         calls: usize = 0,
 
-        fn update(self: *@This(), _: std.mem.Allocator, _: *World) void {
+        fn update(self: *@This(), _: std.mem.Allocator) void {
             self.calls += 1;
         }
     };
@@ -482,10 +463,10 @@ test "registerSystem binds the plugin pointer when provided" {
 
 test "registerSystem preserves group order by first registration" {
     const a = struct {
-        fn call(_: *World, _: std.mem.Allocator) !void {}
+        fn call(_: std.mem.Allocator) !void {}
     }.call;
     const b = struct {
-        fn call(_: *World, _: std.mem.Allocator) !void {}
+        fn call(_: std.mem.Allocator) !void {}
     }.call;
 
     var registry = SystemRegistry.init();
@@ -503,19 +484,19 @@ test "runSystems runs systems group by group, in registration order" {
         var count: usize = 0;
     };
     const a = struct {
-        fn call(_: *World, _: std.mem.Allocator) !void {
+        fn call(_: std.mem.Allocator) !void {
             State.calls[State.count] = 1;
             State.count += 1;
         }
     }.call;
     const b = struct {
-        fn call(_: *World, _: std.mem.Allocator) !void {
+        fn call(_: std.mem.Allocator) !void {
             State.calls[State.count] = 2;
             State.count += 1;
         }
     }.call;
     const c = struct {
-        fn call(_: *World, _: std.mem.Allocator) !void {
+        fn call(_: std.mem.Allocator) !void {
             State.calls[State.count] = 3;
             State.count += 1;
         }
@@ -640,7 +621,7 @@ test "dispatch is a no-op when nothing is registered for the event" {
 
 test "registerOneShotSystem appends to one_shot_systems" {
     const system = struct {
-        fn call(_: *World, _: std.mem.Allocator) !void {}
+        fn call(_: std.mem.Allocator) !void {}
     }.call;
 
     var world = World.init();
@@ -656,13 +637,13 @@ test "runSystems runs registered one-shot systems in registration order" {
         var count: usize = 0;
     };
     const a = struct {
-        fn call(_: *World, _: std.mem.Allocator) !void {
+        fn call(_: std.mem.Allocator) !void {
             State.calls[State.count] = 1;
             State.count += 1;
         }
     }.call;
     const b = struct {
-        fn call(_: *World, _: std.mem.Allocator) !void {
+        fn call(_: std.mem.Allocator) !void {
             State.calls[State.count] = 2;
             State.count += 1;
         }
@@ -682,7 +663,7 @@ test "runSystems binds the plugin pointer for a one-shot system when provided" {
     const Plugin = struct {
         calls: usize = 0,
 
-        fn tick(self: *@This(), _: std.mem.Allocator, _: *World) !void {
+        fn tick(self: *@This(), _: std.mem.Allocator) !void {
             self.calls += 1;
         }
     };
@@ -702,7 +683,7 @@ test "runSystems clears one-shot systems so they do not run again" {
         var calls: usize = 0;
     };
     const system = struct {
-        fn call(_: *World, _: std.mem.Allocator) !void {
+        fn call(_: std.mem.Allocator) !void {
             State.calls += 1;
         }
     }.call;

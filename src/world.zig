@@ -907,20 +907,20 @@ test "a system can mix queries with other parameters in any order" {
     const State = struct {
         var positions: usize = 0;
         var velocities: usize = 0;
-        var saw_world: bool = false;
+        var saw_commands: bool = false;
     };
     State.positions = 0;
     State.velocities = 0;
-    State.saw_world = false;
+    State.saw_commands = false;
 
     const system = struct {
         fn call(
             velocities: Query(&.{Velocity}),
-            world: *World,
+            commands: Commands,
             _: std.mem.Allocator,
             positions: Query(&.{Position}),
         ) !void {
-            State.saw_world = world.archetypes.items.len > 0;
+            State.saw_commands = @TypeOf(commands) == Commands;
 
             var v = velocities.iterator();
             while (v.next()) |_| State.velocities += 1;
@@ -941,7 +941,7 @@ test "a system can mix queries with other parameters in any order" {
 
     try std.testing.expectEqual(2, State.positions);
     try std.testing.expectEqual(1, State.velocities);
-    try std.testing.expect(State.saw_world);
+    try std.testing.expect(State.saw_commands);
 }
 
 test "a query parameter can mutate the components it yields" {
@@ -1027,7 +1027,6 @@ test "a system can mix resources, queries and the world" {
         fn call(
             gravity: Resource(Gravity),
             query: Query(&.{Position}),
-            _: *World,
         ) !void {
             var it = query.iterator();
             while (it.next()) |row| row[0].y -= gravity.value.value;
@@ -1061,9 +1060,9 @@ test "a plugin system and observer can declare parameters beyond the receiver" {
             return .{};
         }
 
-        pub fn build(self: *@This(), plugin_allocator: std.mem.Allocator, world: *World) !void {
-            try world.addSystem(plugin_allocator, "update", move, self);
-            try world.addObserver(plugin_allocator, onDamage, self);
+        pub fn build(self: *@This(), commands: Commands) !void {
+            try commands.addSystem("update", move, self);
+            try commands.addObserver(onDamage, self);
         }
 
         fn move(self: *@This(), query: Query(&.{Position})) !void {
@@ -1101,6 +1100,14 @@ test "a plugin can still query entities from its deinit" {
 
     const Position = struct { x: f32, y: f32 };
 
+    const WorldRef = struct {
+        world: *World,
+
+        pub fn fromWorld(_: std.mem.Allocator, world: *World) @This() {
+            return .{ .world = world };
+        }
+    };
+
     const State = struct {
         var seen: usize = 0;
     };
@@ -1113,10 +1120,10 @@ test "a plugin can still query entities from its deinit" {
             return .{};
         }
 
-        pub fn build(self: *@This(), plugin_allocator: std.mem.Allocator, world: *World) !void {
-            self.world = world;
-            _ = try world.addEntity(plugin_allocator, .{Position{ .x = 1, .y = 1 }});
-            _ = try world.addEntity(plugin_allocator, .{Position{ .x = 2, .y = 2 }});
+        pub fn build(self: *@This(), plugin_allocator: std.mem.Allocator, world: WorldRef) !void {
+            self.world = world.world;
+            _ = try world.world.addEntity(plugin_allocator, .{Position{ .x = 1, .y = 1 }});
+            _ = try world.world.addEntity(plugin_allocator, .{Position{ .x = 2, .y = 2 }});
         }
 
         pub fn deinit(self: *@This(), _: std.mem.Allocator) void {
@@ -1204,7 +1211,7 @@ test "addSystem then runSystems runs the system" {
         var called = false;
     };
     const system = struct {
-        fn call(_: *World, _: std.mem.Allocator) !void {
+        fn call(_: std.mem.Allocator) !void {
             State.called = true;
         }
     }.call;
@@ -1224,13 +1231,13 @@ test "addSystem groups systems by the same group name in call order" {
         var count: usize = 0;
     };
     const a = struct {
-        fn call(_: *World, _: std.mem.Allocator) !void {
+        fn call(_: std.mem.Allocator) !void {
             State.calls[State.count] = 1;
             State.count += 1;
         }
     }.call;
     const b = struct {
-        fn call(_: *World, _: std.mem.Allocator) !void {
+        fn call(_: std.mem.Allocator) !void {
             State.calls[State.count] = 2;
             State.count += 1;
         }
@@ -1256,7 +1263,7 @@ test "addPlugin runs the plugin's init immediately" {
             return .{};
         }
 
-        pub fn build(_: *@This(), _: std.mem.Allocator, _: *World) !void {}
+        pub fn build(_: *@This(), _: std.mem.Allocator) !void {}
     };
 
     var world = World.init();
@@ -1275,11 +1282,11 @@ test "a plugin's build can register systems" {
             return .{};
         }
 
-        pub fn build(self: *@This(), allocator: std.mem.Allocator, world: *World) !void {
-            try world.addSystem(allocator, "update", system, self);
+        pub fn build(self: *@This(), commands: Commands) !void {
+            try commands.addSystem("update", system, self);
         }
 
-        fn system(self: *@This(), _: std.mem.Allocator, _: *World) !void {
+        fn system(self: *@This(), _: std.mem.Allocator) !void {
             self.calls += 1;
         }
     };
@@ -1304,7 +1311,7 @@ test "deinit calls a plugin's deinit" {
             return .{};
         }
 
-        pub fn build(_: *@This(), _: std.mem.Allocator, _: *World) !void {}
+        pub fn build(_: *@This(), _: std.mem.Allocator) !void {}
 
         pub fn deinit(_: *@This(), _: std.mem.Allocator) void {
             State.count += 1;
@@ -1326,12 +1333,12 @@ test "plugin systems share state across runs" {
             return .{};
         }
 
-        pub fn build(self: *@This(), allocator: std.mem.Allocator, world: *World) !void {
-            try world.addSystem(allocator, "update", increment, self);
-            try world.addSystem(allocator, "observe", increment, self);
+        pub fn build(self: *@This(), commands: Commands) !void {
+            try commands.addSystem("update", increment, self);
+            try commands.addSystem("observe", increment, self);
         }
 
-        fn increment(self: *@This(), _: std.mem.Allocator, _: *World) !void {
+        fn increment(self: *@This(), _: std.mem.Allocator) !void {
             self.count += 1;
         }
     };
@@ -1358,12 +1365,12 @@ test "systems registered before a plugin build failure remain valid" {
             return .{};
         }
 
-        pub fn build(self: *@This(), allocator: std.mem.Allocator, world: *World) !void {
-            try world.addSystem(allocator, "update", update, self);
+        pub fn build(self: *@This(), commands: Commands) !void {
+            try commands.addSystem("update", update, self);
             return error.Boom;
         }
 
-        fn update(self: *@This(), _: std.mem.Allocator, _: *World) !void {
+        fn update(self: *@This(), _: std.mem.Allocator) !void {
             self.calls += 1;
         }
     };
@@ -1401,13 +1408,13 @@ test "World.trigger runs an observer registered through World.addObserver" {
     try std.testing.expectEqual(7, State.seen);
 }
 
-test "a plugin's build can register an observer through World.addObserver" {
+test "a plugin's build can register an observer through Commands" {
     const Damage = struct { amount: u32 };
     const Plugin = struct {
         total: u32 = 0,
 
-        pub fn build(self: *@This(), allocator: std.mem.Allocator, world: *World) !void {
-            try world.addObserver(allocator, onDamage, self);
+        pub fn build(self: *@This(), commands: Commands) !void {
+            try commands.addObserver(onDamage, self);
         }
 
         fn onDamage(self: *@This(), event: Event(Damage)) !void {
@@ -1419,6 +1426,7 @@ test "a plugin's build can register an observer through World.addObserver" {
     defer world.deinit(std.testing.allocator);
 
     try world.addPlugin(std.testing.allocator, Plugin);
+    try world.flushSystemRegistrations(std.testing.allocator);
     world.trigger(std.testing.allocator, Damage{ .amount = 5 });
 
     const entry = world.system_registry.observers.values()[0].items[0];
@@ -1431,7 +1439,7 @@ test "World.runSystems runs a one-shot system registered through World.addOneSho
         var calls: usize = 0;
     };
     const system = struct {
-        fn call(_: *World, _: std.mem.Allocator) !void {
+        fn call(_: std.mem.Allocator) !void {
             State.calls += 1;
         }
     }.call;
@@ -1450,11 +1458,11 @@ test "a plugin's build can register a one-shot system through World.addOneShotSy
     const Plugin = struct {
         calls: usize = 0,
 
-        pub fn build(self: *@This(), allocator: std.mem.Allocator, world: *World) !void {
-            try world.addOneShotSystem(allocator, tick, self);
+        pub fn build(self: *@This(), commands: Commands) !void {
+            try commands.addOneShotSystem(tick, self);
         }
 
-        fn tick(self: *@This(), _: std.mem.Allocator, _: *World) !void {
+        fn tick(self: *@This(), _: std.mem.Allocator) !void {
             self.calls += 1;
         }
     };
@@ -1504,14 +1512,13 @@ test "World.removeResource removes it and calls its deinit" {
 test "a plugin's build can register a resource, read later by a system" {
     const ClearColor = struct { r: f32, g: f32, b: f32 };
     const ConfigPlugin = struct {
-        pub fn build(_: *@This(), allocator: std.mem.Allocator, world: *World) !void {
-            try world.addResource(allocator, ClearColor, .{ .r = 1, .g = 1, .b = 1 });
-            try world.addSystem(allocator, "update", fadeToBlack, null);
+        pub fn build(_: *@This(), commands: Commands) !void {
+            try commands.addResource(ClearColor, .{ .r = 1, .g = 1, .b = 1 });
+            try commands.addSystem("update", fadeToBlack, null);
         }
 
-        fn fadeToBlack(world: *World, _: std.mem.Allocator) !void {
-            const color = world.getResource(ClearColor).?;
-            color.r -= 0.1;
+        fn fadeToBlack(color: Resource(ClearColor)) !void {
+            color.value.r -= 0.1;
         }
     };
 
@@ -1689,8 +1696,8 @@ test "World.removeEntity fires Destroying while the component is still readable"
         var observed: ?Position = null;
     };
     const onPositionDestroying = struct {
-        fn call(world: *World, event: Event(Destroying(Position))) !void {
-            const components = world.getEntity(event.value.entity, &.{Position}) catch return;
+        fn call(positions: Query(&.{Position}), event: Event(Destroying(Position))) !void {
+            const components = positions.get(event.value.entity) catch return;
             State.observed = components[0].*;
         }
     }.call;
@@ -2085,8 +2092,8 @@ test "a resource removed through Commands stays readable for the rest of the gro
             config.value.scale += 1;
         }
 
-        fn reader(world: *World) void {
-            if (world.getResource(Config)) |config| State.seen_after_remove = config.scale;
+        fn reader(config: Resource(Config)) void {
+            State.seen_after_remove = config.value.scale;
         }
     };
 
@@ -2118,8 +2125,8 @@ test "a resource added through Commands is visible to the next group" {
             try commands.addResource(Config, .{ .scale = 3 });
         }
 
-        fn consumer(world: *World) void {
-            if (world.getResource(Config)) |config| State.seen = config.scale;
+        fn consumer(config: Resource(Config)) void {
+            State.seen = config.value.scale;
         }
     };
 
@@ -2235,9 +2242,10 @@ test "an observer reached through Commands.trigger can queue deferred work" {
         }
     }.call;
     const system = struct {
-        fn call(commands: Commands, world: *World) !void {
+        fn call(commands: Commands, positions: Query(&.{Position})) !void {
             commands.trigger(Spawned{ .x = 5 });
-            State.entities_at_trigger = world.archetypes.items.len;
+            var it = positions.iterator();
+            while (it.next()) |_| State.entities_at_trigger += 1;
         }
     }.call;
 
