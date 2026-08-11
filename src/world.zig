@@ -11,6 +11,9 @@ const hashBytes = @import("hash.zig").hashBytes;
 const sortMultiple = @import("sort.zig").sortMultiple;
 const panic = @import("util.zig").panic;
 const EntityComponents = @import("util.zig").EntityComponents;
+const componentTypes = @import("util.zig").componentTypes;
+const markerComponents = @import("util.zig").markerComponents;
+const sizedComponents = @import("util.zig").sizedComponents;
 const PluginRegistry = @import("plugin_registry.zig").PluginRegistry;
 const SystemRegistry = @import("system_registry.zig").SystemRegistry;
 const SystemEntry = @import("system_registry.zig").SystemEntry;
@@ -71,15 +74,10 @@ pub const World = struct {
     }
 
     pub fn addEntity(self: *World, allocator: std.mem.Allocator, components: anytype) !Entity {
-        const fields = std.meta.fields(@TypeOf(components));
-
-        const component_types: [fields.len]type = comptime blk: {
-            var types: [fields.len]type = undefined;
-            for (fields, 0..) |field, idx| types[idx] = field.type;
-            break :blk types;
-        };
-
-        const archetype_id = try self.findOrCreateArchetype(allocator, &component_types);
+        const archetype_id = try self.findOrCreateArchetype(
+            allocator,
+            comptime componentTypes(@TypeOf(components)),
+        );
         const slot = try self.allocateEntitySlot(allocator);
 
         const entity = Entity{
@@ -230,14 +228,27 @@ pub const World = struct {
         allocator: std.mem.Allocator,
         comptime components: []const type,
     ) !u32 {
-        var ids: [components.len]u64 = undefined;
-        inline for (components, 0..) |component, idx| ids[idx] = hash(component);
+        const sized = comptime sizedComponents(components);
+        const markers = comptime markerComponents(components);
+
+        var ids: [sized.len]u64 = undefined;
+        inline for (sized, 0..) |component, idx| ids[idx] = hash(component);
 
         const ids_slice: []u64 = &ids;
         sortMultiple(ids_slice, .{});
 
+        var marker_ids: [markers.len]u64 = undefined;
+        inline for (markers, 0..) |component, idx| marker_ids[idx] = hash(component);
+
+        const marker_ids_slice: []u64 = &marker_ids;
+        sortMultiple(marker_ids_slice, .{});
+
         for (self.archetypes.items, 0..) |archetype, index| {
-            if (std.mem.eql(u64, archetype.component_ids, ids_slice)) return @intCast(index);
+            if (std.mem.eql(u64, archetype.component_ids, ids_slice) and
+                std.mem.eql(u64, archetype.marker_ids, marker_ids_slice))
+            {
+                return @intCast(index);
+            }
         }
 
         var new_archetype = try Archetype.init(allocator, components, null, lifecycleFunctionsFor);
@@ -2329,6 +2340,177 @@ test "an observer reached through Observers.trigger can register another observe
     try world.runSystems(allocator);
     try std.testing.expectEqual(2, State.registrar_calls);
     try std.testing.expectEqual(16, State.added_calls);
+}
+
+test "a marker component filters a query without contributing storage" {
+    const allocator = std.testing.allocator;
+
+    const Player = struct {};
+    const Position = struct { x: f32, y: f32 };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    _ = try world.addEntity(allocator, .{ Player{}, Position{ .x = 1, .y = 2 } });
+    _ = try world.addEntity(allocator, .{Position{ .x = 3, .y = 4 }});
+
+    var it = world.query(&.{ Player, Position }).iterator();
+    var matched: usize = 0;
+    while (it.next()) |row| {
+        const position = row[1];
+        try std.testing.expectEqual(Position{ .x = 1, .y = 2 }, position.*);
+        matched += 1;
+    }
+
+    try std.testing.expectEqual(1, matched);
+}
+
+test "a query without the marker still matches entities carrying it" {
+    const allocator = std.testing.allocator;
+
+    const Player = struct {};
+    const Position = struct { x: f32, y: f32 };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    _ = try world.addEntity(allocator, .{ Player{}, Position{ .x = 1, .y = 2 } });
+    _ = try world.addEntity(allocator, .{Position{ .x = 3, .y = 4 }});
+
+    var it = world.query(&.{Position}).iterator();
+    var matched: usize = 0;
+    while (it.next()) |_| matched += 1;
+
+    try std.testing.expectEqual(2, matched);
+}
+
+test "an entity built only from marker components is queryable" {
+    const allocator = std.testing.allocator;
+
+    const Player = struct {};
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    _ = try world.addEntity(allocator, .{Player{}});
+
+    try std.testing.expect(world.query(&.{Player}).first() != null);
+}
+
+test "marker components do not collapse distinct archetypes" {
+    const allocator = std.testing.allocator;
+
+    const Player = struct {};
+    const Frozen = struct {};
+    const Position = struct { x: f32, y: f32 };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    _ = try world.addEntity(allocator, .{Position{ .x = 1, .y = 1 }});
+    _ = try world.addEntity(allocator, .{ Player{}, Position{ .x = 2, .y = 2 } });
+    _ = try world.addEntity(allocator, .{ Frozen{}, Position{ .x = 3, .y = 3 } });
+
+    try std.testing.expectEqual(3, world.archetypes.items.len);
+
+    const player_position = world.query(&.{ Player, Position }).first().?[1];
+    try std.testing.expectEqual(Position{ .x = 2, .y = 2 }, player_position.*);
+
+    const frozen_position = world.query(&.{ Frozen, Position }).first().?[1];
+    try std.testing.expectEqual(Position{ .x = 3, .y = 3 }, frozen_position.*);
+}
+
+test "entities sharing a marker set reuse the same archetype" {
+    const allocator = std.testing.allocator;
+
+    const Player = struct {};
+    const Position = struct { x: f32, y: f32 };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    _ = try world.addEntity(allocator, .{ Player{}, Position{ .x = 1, .y = 1 } });
+    _ = try world.addEntity(allocator, .{ Player{}, Position{ .x = 2, .y = 2 } });
+    _ = try world.addEntity(allocator, .{ Player{}, Position{ .x = 3, .y = 3 } });
+
+    try std.testing.expectEqual(1, world.archetypes.items.len);
+
+    var it = world.query(&.{ Player, Position }).iterator();
+    var matched: usize = 0;
+    while (it.next()) |_| matched += 1;
+
+    try std.testing.expectEqual(3, matched);
+}
+
+test "marker components fire Added and Destroying" {
+    const allocator = std.testing.allocator;
+
+    const Player = struct {};
+
+    const State = struct {
+        var added: usize = 0;
+        var destroying: usize = 0;
+    };
+    State.added = 0;
+    State.destroying = 0;
+
+    const Handlers = struct {
+        fn onAdded(_: Event(component_events.Added(Player))) void {
+            State.added += 1;
+        }
+
+        fn onDestroying(_: Event(component_events.Destroying(Player))) void {
+            State.destroying += 1;
+        }
+    };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    try world.addObserver(allocator, Handlers.onAdded, null);
+    try world.addObserver(allocator, Handlers.onDestroying, null);
+
+    const entity = try world.addEntity(allocator, .{Player{}});
+    try std.testing.expectEqual(1, State.added);
+    try std.testing.expectEqual(0, State.destroying);
+
+    try world.removeEntity(allocator, entity);
+    try std.testing.expectEqual(1, State.destroying);
+}
+
+test "getEntity returns Error.UnknownComponent for a marker the entity does not carry" {
+    const allocator = std.testing.allocator;
+
+    const Player = struct {};
+    const Position = struct { x: f32, y: f32 };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    const entity = try world.addEntity(allocator, .{Position{ .x = 1, .y = 2 }});
+
+    try std.testing.expectError(
+        Error.UnknownComponent,
+        world.getEntity(entity, &.{ Player, Position }),
+    );
+}
+
+test "a marker survives the swap-remove of another entity" {
+    const allocator = std.testing.allocator;
+
+    const Player = struct {};
+    const Position = struct { x: f32, y: f32 };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    const first = try world.addEntity(allocator, .{ Player{}, Position{ .x = 1, .y = 1 } });
+    const second = try world.addEntity(allocator, .{ Player{}, Position{ .x = 2, .y = 2 } });
+
+    try world.removeEntity(allocator, first);
+
+    const position = try world.getEntity(second, &.{ Player, Position });
+    try std.testing.expectEqual(Position{ .x = 2, .y = 2 }, position[1].*);
 }
 
 test "Query.first returns the first matching entity's components" {

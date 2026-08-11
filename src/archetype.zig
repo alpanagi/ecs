@@ -3,8 +3,11 @@ const std = @import("std");
 const Error = @import("error.zig").Error;
 const Entity = @import("entity.zig").Entity;
 const EntityComponents = @import("util.zig").EntityComponents;
+const componentTypes = @import("util.zig").componentTypes;
 const hash = @import("hash.zig").hash;
+const markerComponents = @import("util.zig").markerComponents;
 const panic = @import("util.zig").panic;
+const sizedComponents = @import("util.zig").sizedComponents;
 const sortMultiple = @import("sort.zig").sortMultiple;
 
 const preallocated_entities_count: usize = 16;
@@ -23,6 +26,7 @@ pub const Archetype = struct {
     component_ids: []const u64,
     component_sizes: []const u32,
     component_deinits: []const ?DeinitFunction,
+    marker_ids: []const u64,
     component_added: []const LifecycleFunction,
     component_destroying: []const LifecycleFunction,
     data: [][]align(64) u8,
@@ -33,19 +37,27 @@ pub const Archetype = struct {
         capacity: ?usize,
         comptime lifecycleFunctionsFor: fn (comptime component: type) LifecycleFunctions,
     ) !Archetype {
-        const component_ids = try allocator.alloc(u64, components.len);
+        const sized = comptime sizedComponents(components);
+        const markers = comptime markerComponents(components);
+
+        const component_ids = try allocator.alloc(u64, sized.len);
         errdefer allocator.free(component_ids);
-        inline for (components, 0..) |component, idx| component_ids[idx] = hash(component);
+        inline for (sized, 0..) |component, idx| component_ids[idx] = hash(component);
 
-        const component_sizes = try allocator.alloc(u32, components.len);
+        const component_sizes = try allocator.alloc(u32, sized.len);
         errdefer allocator.free(component_sizes);
-        inline for (components, 0..) |component, idx| component_sizes[idx] = @sizeOf(component);
+        inline for (sized, 0..) |component, idx| component_sizes[idx] = @sizeOf(component);
 
-        const component_deinits = try allocator.alloc(?DeinitFunction, components.len);
+        const component_deinits = try allocator.alloc(?DeinitFunction, sized.len);
         errdefer allocator.free(component_deinits);
-        inline for (components, 0..) |component, idx| {
+        inline for (sized, 0..) |component, idx| {
             component_deinits[idx] = getDeinitFunctionFor(component);
         }
+
+        const marker_ids = try allocator.alloc(u64, markers.len);
+        errdefer allocator.free(marker_ids);
+        inline for (markers, 0..) |component, idx| marker_ids[idx] = hash(component);
+        sortMultiple(marker_ids, .{});
 
         const component_added = try allocator.alloc(LifecycleFunction, components.len);
         errdefer allocator.free(component_added);
@@ -58,13 +70,13 @@ pub const Archetype = struct {
         }
 
         // Alignment here to optimize cache reads.
-        const data = try allocator.alloc([]align(64) u8, components.len);
+        const data = try allocator.alloc([]align(64) u8, sized.len);
         errdefer allocator.free(data);
 
         var allocated: usize = 0;
         errdefer for (data[0..allocated]) |buffer| allocator.free(buffer);
 
-        inline for (components, 0..) |component, idx| {
+        inline for (sized, 0..) |component, idx| {
             data[idx] = try allocator.alignedAlloc(
                 u8,
                 std.mem.Alignment.fromByteUnits(64),
@@ -76,8 +88,6 @@ pub const Archetype = struct {
         sortMultiple(component_ids, .{
             component_sizes,
             component_deinits,
-            component_added,
-            component_destroying,
             data,
         });
 
@@ -89,6 +99,7 @@ pub const Archetype = struct {
             .component_ids = component_ids,
             .component_sizes = component_sizes,
             .component_deinits = component_deinits,
+            .marker_ids = marker_ids,
             .component_added = component_added,
             .component_destroying = component_destroying,
             .data = data,
@@ -112,6 +123,7 @@ pub const Archetype = struct {
         allocator.free(self.component_ids);
         allocator.free(self.component_sizes);
         allocator.free(self.component_deinits);
+        allocator.free(self.marker_ids);
         allocator.free(self.component_added);
         allocator.free(self.component_destroying);
         for (self.data) |value| allocator.free(value);
@@ -127,12 +139,22 @@ pub const Archetype = struct {
     ) !u32 {
         const entity_index = self.entity_count;
         const fields = std.meta.fields(@TypeOf(components));
+        const passed = comptime componentTypes(@TypeOf(components));
+        const sized = comptime sizedComponents(passed);
+        const markers = comptime markerComponents(passed);
 
-        if (fields.len != self.component_ids.len) return Error.ComponentMismatch;
+        if (sized.len != self.component_ids.len) return Error.ComponentMismatch;
+        if (markers.len != self.marker_ids.len) return Error.ComponentMismatch;
+
+        inline for (markers) |component| {
+            if (self.findMarkerIndex(hash(component)) == null) return Error.UnknownComponent;
+        }
 
         if (self.entity_count == self.entities.len) self.grow(allocator);
 
         inline for (fields) |field| {
+            if (comptime @sizeOf(field.type) == 0) continue;
+
             const idx = self.findComponentIndex(hash(field.type)) orelse {
                 return Error.UnknownComponent;
             };
@@ -191,6 +213,12 @@ pub const Archetype = struct {
         var result: EntityComponents(components) = undefined;
 
         inline for (components, 0..) |component, idx| {
+            if (comptime @sizeOf(component) == 0) {
+                if (self.findMarkerIndex(hash(component)) == null) return Error.UnknownComponent;
+                result[idx] = emptyInstance(component);
+                continue;
+            }
+
             const component_idx = self.findComponentIndex(hash(component)) orelse {
                 return Error.UnknownComponent;
             };
@@ -204,7 +232,9 @@ pub const Archetype = struct {
 
     pub fn hasComponents(self: *const Archetype, comptime components: []const type) bool {
         inline for (components) |component| {
-            if (self.findComponentIndex(hash(component)) == null) return false;
+            if (comptime @sizeOf(component) == 0) {
+                if (self.findMarkerIndex(hash(component)) == null) return false;
+            } else if (self.findComponentIndex(hash(component)) == null) return false;
         }
         return true;
     }
@@ -232,13 +262,27 @@ pub const Archetype = struct {
     }
 
     fn findComponentIndex(self: *const Archetype, component_id: u64) ?usize {
-        return std.sort.binarySearch(u64, self.component_ids, component_id, struct {
-            fn order(context: u64, item: u64) std.math.Order {
-                return std.math.order(context, item);
-            }
-        }.order);
+        return findId(self.component_ids, component_id);
+    }
+
+    fn findMarkerIndex(self: *const Archetype, component_id: u64) ?usize {
+        return findId(self.marker_ids, component_id);
     }
 };
+
+fn findId(ids: []const u64, component_id: u64) ?usize {
+    return std.sort.binarySearch(u64, ids, component_id, struct {
+        fn order(context: u64, item: u64) std.math.Order {
+            return std.math.order(context, item);
+        }
+    }.order);
+}
+
+fn emptyInstance(comptime component: type) *component {
+    return &struct {
+        var instance: component = .{};
+    }.instance;
+}
 
 pub const RelocatedEntity = struct {
     entity: Entity,
@@ -301,6 +345,125 @@ test "Archetype sorts the components on initialization" {
     try std.testing.expectEqualSlices(u64, expected_ids, archetype.component_ids);
     try std.testing.expectEqualSlices(u32, expected_sizes, archetype.component_sizes);
     archetype.deinit(allocator);
+}
+
+test "Archetype keeps marker components out of the component arrays" {
+    const allocator = std.testing.allocator;
+
+    const Player = struct {};
+    const Position = struct { x: f32, y: f32 };
+
+    var archetype = try Archetype.init(
+        allocator,
+        &.{ Player, Position },
+        null,
+        noOpLifecycleFunctionsFor,
+    );
+    defer archetype.deinit(allocator);
+
+    try std.testing.expectEqualSlices(u64, &.{hash(Position)}, archetype.component_ids);
+    try std.testing.expectEqualSlices(u64, &.{hash(Player)}, archetype.marker_ids);
+    try std.testing.expectEqual(1, archetype.data.len);
+    try std.testing.expectEqual(1, archetype.component_sizes.len);
+    try std.testing.expectEqual(1, archetype.component_deinits.len);
+}
+
+test "Archetype keeps a lifecycle hook for every component including markers" {
+    const allocator = std.testing.allocator;
+
+    const Player = struct {};
+    const Position = struct { x: f32, y: f32 };
+
+    var archetype = try Archetype.init(
+        allocator,
+        &.{ Player, Position },
+        null,
+        noOpLifecycleFunctionsFor,
+    );
+    defer archetype.deinit(allocator);
+
+    try std.testing.expectEqual(2, archetype.component_added.len);
+    try std.testing.expectEqual(2, archetype.component_destroying.len);
+}
+
+test "Archetype sorts marker ids" {
+    const allocator = std.testing.allocator;
+
+    const Player = struct {};
+    const Frozen = struct {};
+
+    const expected: []const u64 = if (hash(Player) < hash(Frozen))
+        &.{ hash(Player), hash(Frozen) }
+    else
+        &.{ hash(Frozen), hash(Player) };
+
+    var archetype = try Archetype.init(allocator, &.{ Player, Frozen }, null, noOpLifecycleFunctionsFor);
+    try std.testing.expectEqualSlices(u64, expected, archetype.marker_ids);
+    archetype.deinit(allocator);
+
+    archetype = try Archetype.init(allocator, &.{ Frozen, Player }, null, noOpLifecycleFunctionsFor);
+    try std.testing.expectEqualSlices(u64, expected, archetype.marker_ids);
+    archetype.deinit(allocator);
+}
+
+test "hasComponents matches marker components" {
+    const allocator = std.testing.allocator;
+
+    const Player = struct {};
+    const Frozen = struct {};
+    const Position = struct { x: f32, y: f32 };
+
+    var archetype = try Archetype.init(
+        allocator,
+        &.{ Player, Position },
+        null,
+        noOpLifecycleFunctionsFor,
+    );
+    defer archetype.deinit(allocator);
+
+    try std.testing.expect(archetype.hasComponents(&.{ Player, Position }));
+    try std.testing.expect(archetype.hasComponents(&.{Player}));
+    try std.testing.expect(!archetype.hasComponents(&.{Frozen}));
+    try std.testing.expect(!archetype.hasComponents(&.{ Frozen, Position }));
+}
+
+test "addEntity returns Error.ComponentMismatch when a marker component is missing" {
+    const allocator = std.testing.allocator;
+
+    const Player = struct {};
+    const Position = struct { x: f32, y: f32 };
+
+    var archetype = try Archetype.init(
+        allocator,
+        &.{ Player, Position },
+        null,
+        noOpLifecycleFunctionsFor,
+    );
+    defer archetype.deinit(allocator);
+
+    try std.testing.expectError(
+        Error.ComponentMismatch,
+        archetype.addEntity(
+            allocator,
+            .{ .id = 0, .generation = 0 },
+            .{Position{ .x = 1, .y = 2 }},
+        ),
+    );
+}
+
+test "addEntity returns Error.UnknownComponent for a marker the archetype does not have" {
+    const allocator = std.testing.allocator;
+
+    const Player = struct {};
+    const Frozen = struct {};
+
+    var archetype = try Archetype.init(allocator, &.{Player}, null, noOpLifecycleFunctionsFor);
+    defer archetype.deinit(allocator);
+
+    try std.testing.expectError(
+        Error.UnknownComponent,
+        archetype.addEntity(allocator, .{ .id = 0, .generation = 0 }, .{Frozen{}}),
+    );
 }
 
 test "Archetype allocates as many component arrays as passed component_ids on initialization" {
