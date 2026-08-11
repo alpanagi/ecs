@@ -366,6 +366,11 @@ pub fn Query(comptime components: []const type) type {
             return .{ .world = self.world };
         }
 
+        pub fn first(self: @This()) ?EntityComponents(components) {
+            var it = self.iterator();
+            return it.next();
+        }
+
         pub fn get(self: @This(), entity: Entity) !EntityComponents(components) {
             return self.world.getEntity(entity, components);
         }
@@ -2324,6 +2329,73 @@ test "an observer reached through Observers.trigger can register another observe
     try world.runSystems(allocator);
     try std.testing.expectEqual(2, State.registrar_calls);
     try std.testing.expectEqual(16, State.added_calls);
+}
+
+test "Query.first returns the first matching entity's components" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    _ = try world.addEntity(allocator, .{Position{ .x = 1, .y = 2 }});
+    _ = try world.addEntity(allocator, .{Position{ .x = 3, .y = 4 }});
+
+    const position = world.query(&.{Position}).first() orelse
+        return error.TestUnexpectedResult;
+
+    try std.testing.expectEqual(Position{ .x = 1, .y = 2 }, position[0].*);
+}
+
+test "Query.first writes through to the stored components" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    const entity = try world.addEntity(allocator, .{Position{ .x = 1, .y = 0 }});
+
+    const position = world.query(&.{Position}).first() orelse
+        return error.TestUnexpectedResult;
+    position[0].x += 10;
+
+    const reread = try world.getEntity(entity, &.{Position});
+    try std.testing.expectEqual(@as(f32, 11), reread[0].x);
+}
+
+test "Query.first returns null when nothing matches" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+    const Velocity = struct { dx: f32, dy: f32 };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    _ = try world.addEntity(allocator, .{Position{ .x = 1, .y = 2 }});
+
+    try std.testing.expectEqual(null, world.query(&.{Velocity}).first());
+}
+
+test "Query.first skips despawned entities" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    const entity = try world.addEntity(allocator, .{Position{ .x = 1, .y = 2 }});
+    _ = try world.addEntity(allocator, .{Position{ .x = 3, .y = 4 }});
+    try world.removeEntity(allocator, entity);
+
+    const position = world.query(&.{Position}).first() orelse
+        return error.TestUnexpectedResult;
+
+    try std.testing.expectEqual(Position{ .x = 3, .y = 4 }, position[0].*);
 }
 
 test "Query.get returns pointers to the components the query declares" {
