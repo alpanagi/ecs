@@ -1,6 +1,14 @@
 const std = @import("std");
 
+const util = @import("util.zig");
+
 pub fn sortMultiple(keys: anytype, others: anytype) void {
+    inline for (others) |other| {
+        if (other.len != keys.len) {
+            util.panic("sortMultiple: parallel array has {d} elements, keys has {d}", .{ other.len, keys.len });
+        }
+    }
+
     const KeyType = std.meta.Child(@TypeOf(keys));
 
     const SortContext = struct {
@@ -22,7 +30,7 @@ pub fn sortMultiple(keys: anytype, others: anytype) void {
     std.mem.sortUnstableContext(0, keys.len, SortContext{ .keys = keys, .others = others });
 }
 
-test "Sorts 2 parallel arrays correctly" {
+test "sortMultiple: reorders one parallel array with the keys" {
     var keys_arr = [_]u64{ 5, 2, 4, 3, 1 };
     var other_arr = [_]f32{ 12.2, 43.1, 5.6, 66.4, 9.0 };
 
@@ -38,7 +46,7 @@ test "Sorts 2 parallel arrays correctly" {
     try std.testing.expectEqualSlices(f32, &expected_other, other);
 }
 
-test "Sorts 3 parallel arrays correctly" {
+test "sortMultiple: reorders two parallel arrays of different element types" {
     var keys_arr = [_]u64{ 5, 2, 4, 3, 1 };
     var other1_arr = [_]f32{ 12.2, 43.1, 5.6, 66.4, 9.0 };
     var other2_arr = [_]u8{ 1, 2, 3, 4, 5 };
@@ -58,7 +66,7 @@ test "Sorts 3 parallel arrays correctly" {
     try std.testing.expectEqualSlices(u8, &expected_other2, other2);
 }
 
-test "sortMultiple does nothing on an empty array" {
+test "sortMultiple: does nothing on an empty array" {
     var keys_arr = [_]u64{};
     const keys: []u64 = &keys_arr;
 
@@ -67,7 +75,7 @@ test "sortMultiple does nothing on an empty array" {
     try std.testing.expectEqual(0, keys.len);
 }
 
-test "sortMultiple does nothing to an already-sorted single-element array" {
+test "sortMultiple: does nothing on a single element array" {
     var keys_arr = [_]u64{42};
     var other_arr = [_]f32{1.5};
 
@@ -80,11 +88,32 @@ test "sortMultiple does nothing to an already-sorted single-element array" {
     try std.testing.expectEqualSlices(f32, &[_]f32{1.5}, other);
 }
 
-test "sortMultiple sorts keys when there are no other arrays" {
+test "sortMultiple: sorts the keys when there are no other arrays" {
     var keys_arr = [_]u64{ 5, 2, 4, 3, 1 };
     const keys: []u64 = &keys_arr;
 
     sortMultiple(keys, .{});
 
     try std.testing.expectEqualSlices(u64, &[_]u64{ 1, 2, 3, 4, 5 }, keys);
+}
+
+test "sortMultiple: keeps each pairing when keys are equal" {
+    var keys_arr = [_]u64{ 3, 1, 3, 1, 2 };
+    var tags_arr = [_]u8{ 'a', 'b', 'c', 'd', 'e' };
+
+    const keys: []u64 = &keys_arr;
+    const tags: []u8 = &tags_arr;
+
+    sortMultiple(keys, .{tags});
+
+    try std.testing.expectEqualSlices(u64, &[_]u64{ 1, 1, 2, 3, 3 }, keys);
+    for (keys, tags) |key, tag| {
+        const original: u64 = switch (tag) {
+            'a', 'c' => 3,
+            'b', 'd' => 1,
+            'e' => 2,
+            else => unreachable,
+        };
+        try std.testing.expectEqual(original, key);
+    }
 }
