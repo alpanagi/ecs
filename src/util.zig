@@ -5,6 +5,10 @@ pub fn panic(comptime message: []const u8, arguments: anytype) noreturn {
     std.process.exit(1);
 }
 
+pub fn panicOom(comptime function_name: []const u8) noreturn {
+    panic(function_name ++ ": out of memory", .{});
+}
+
 pub fn componentTypes(comptime Components: type) []const type {
     comptime var result: []const type = &.{};
     for (std.meta.fields(Components)) |field| result = result ++ [_]type{field.type};
