@@ -1,188 +1,122 @@
 const std = @import("std");
 
+const ComponentData = @import("component.zig").ComponentData;
+const ComponentDescriptor = @import("component.zig").ComponentDescriptor;
 const Error = @import("error.zig").Error;
-const Entity = @import("entity.zig").Entity;
-const EntityComponents = @import("util.zig").EntityComponents;
-const componentTypes = @import("util.zig").componentTypes;
-const hash = @import("hash.zig").hash;
-const markerComponents = @import("util.zig").markerComponents;
 const panic = @import("util.zig").panic;
-const sizedComponents = @import("util.zig").sizedComponents;
-const sortMultiple = @import("sort.zig").sortMultiple;
+const panicOom = @import("util.zig").panicOom;
 
 const preallocated_entities_count: usize = 16;
 
-pub const LifecycleFunction = *const fn (*anyopaque, std.mem.Allocator, Entity) void;
-
-pub const LifecycleFunctions = struct {
-    added: LifecycleFunction,
-    destroying: LifecycleFunction,
-};
-
 pub const Archetype = struct {
-    entity_count: u32,
-    entities: []Entity,
+    pub const InitOptions = struct {
+        capacity: ?usize = null,
+    };
 
-    component_ids: []const u64,
-    component_sizes: []const u32,
-    component_deinits: []const ?DeinitFunction,
-    marker_ids: []const u64,
-    component_added: []const LifecycleFunction,
-    component_destroying: []const LifecycleFunction,
+    entity_count: u32,
+    entity_ids: []u32,
+
+    marker_component_ids: []const u64,
+    sized_components: []ComponentDescriptor,
     data: [][]align(64) u8,
 
     pub fn init(
         allocator: std.mem.Allocator,
-        comptime components: []const type,
-        capacity: ?usize,
-        comptime lifecycleFunctionsFor: fn (comptime component: type) LifecycleFunctions,
-    ) !Archetype {
-        const sized = comptime sizedComponents(components);
-        const markers = comptime markerComponents(components);
+        components: []const ComponentDescriptor,
+        options: InitOptions,
+    ) Archetype {
+        const capacity = options.capacity orelse preallocated_entities_count;
+        if (capacity == 0) panic("Archetype.init: capacity must be greater than zero", .{});
 
-        const component_ids = try allocator.alloc(u64, sized.len);
-        errdefer allocator.free(component_ids);
-        inline for (sized, 0..) |component, idx| component_ids[idx] = hash(component);
+        var sized_components = std.ArrayList(ComponentDescriptor).initCapacity(allocator, components.len) catch panicOom("Archetype.init");
+        var marker_ids = std.ArrayList(u64).initCapacity(allocator, components.len) catch panicOom("Archetype.init");
 
-        const component_sizes = try allocator.alloc(u32, sized.len);
-        errdefer allocator.free(component_sizes);
-        inline for (sized, 0..) |component, idx| component_sizes[idx] = @sizeOf(component);
+        for (components) |component| {
+            if (component.size % component.alignment != 0) {
+                panic(
+                    "Archetype.init: component {d} has size {d}, not a multiple of its alignment {d}",
+                    .{ component.id, component.size, component.alignment },
+                );
+            }
 
-        const component_deinits = try allocator.alloc(?DeinitFunction, sized.len);
-        errdefer allocator.free(component_deinits);
-        inline for (sized, 0..) |component, idx| {
-            component_deinits[idx] = getDeinitFunctionFor(component);
-        }
-
-        const marker_ids = try allocator.alloc(u64, markers.len);
-        errdefer allocator.free(marker_ids);
-        inline for (markers, 0..) |component, idx| marker_ids[idx] = hash(component);
-        sortMultiple(marker_ids, .{});
-
-        const component_added = try allocator.alloc(LifecycleFunction, components.len);
-        errdefer allocator.free(component_added);
-        const component_destroying = try allocator.alloc(LifecycleFunction, components.len);
-        errdefer allocator.free(component_destroying);
-        inline for (components, 0..) |component, idx| {
-            const functions = lifecycleFunctionsFor(component);
-            component_added[idx] = functions.added;
-            component_destroying[idx] = functions.destroying;
-        }
-
-        // Alignment here to optimize cache reads.
-        const data = try allocator.alloc([]align(64) u8, sized.len);
-        errdefer allocator.free(data);
-
-        var allocated: usize = 0;
-        errdefer for (data[0..allocated]) |buffer| allocator.free(buffer);
-
-        inline for (sized, 0..) |component, idx| {
-            data[idx] = try allocator.alignedAlloc(
-                u8,
-                std.mem.Alignment.fromByteUnits(64),
-                preallocated_entities_count * @sizeOf(component),
-            );
-            allocated += 1;
-        }
-
-        sortMultiple(component_ids, .{
-            component_sizes,
-            component_deinits,
-            data,
-        });
-
-        const entities = try allocator.alloc(Entity, preallocated_entities_count);
-        errdefer allocator.free(entities);
-
-        var archetype = Archetype{
-            .entity_count = 0,
-            .component_ids = component_ids,
-            .component_sizes = component_sizes,
-            .component_deinits = component_deinits,
-            .marker_ids = marker_ids,
-            .component_added = component_added,
-            .component_destroying = component_destroying,
-            .data = data,
-            .entities = entities,
-        };
-
-        if (capacity) |target_capacity| archetype.ensureTotalCapacity(allocator, target_capacity);
-
-        return archetype;
-    }
-
-    pub fn deinit(self: *Archetype, allocator: std.mem.Allocator) void {
-        for (self.data, self.component_sizes, self.component_deinits) |buffer, size, deinit_| {
-            if (deinit_) |deinit_function| {
-                for (0..self.entity_count) |entity_index| {
-                    deinit_function(@ptrCast(&buffer[entity_index * size]), allocator);
-                }
+            if (component.size > 0) {
+                sized_components.appendAssumeCapacity(component);
+            } else {
+                marker_ids.appendAssumeCapacity(component.id);
             }
         }
 
-        allocator.free(self.component_ids);
-        allocator.free(self.component_sizes);
-        allocator.free(self.component_deinits);
-        allocator.free(self.marker_ids);
-        allocator.free(self.component_added);
-        allocator.free(self.component_destroying);
+        std.sort.pdq(ComponentDescriptor, sized_components.items, {}, ComponentDescriptor.lessThan);
+        std.sort.pdq(u64, marker_ids.items, {}, std.sort.asc(u64));
+
+        const data = allocator.alloc([]align(64) u8, sized_components.items.len) catch panicOom("Archetype.init");
+        for (sized_components.items, 0..) |component, idx| {
+            data[idx] = allocator.alignedAlloc(
+                u8,
+                .fromByteUnits(64),
+                capacity * component.size,
+            ) catch panicOom("Archetype.init");
+        }
+
+        const entity_ids = allocator.alloc(u32, capacity) catch
+            panicOom("Archetype.init");
+
+        return Archetype{
+            .entity_count = 0,
+            .entity_ids = entity_ids,
+            .sized_components = sized_components.toOwnedSlice(allocator) catch panicOom("Archetype.init"),
+            .marker_component_ids = marker_ids.toOwnedSlice(allocator) catch panicOom("Archetype.init"),
+            .data = data,
+        };
+    }
+
+    pub fn deinit(self: *Archetype, allocator: std.mem.Allocator) void {
+        for (self.data, self.sized_components) |buffer, component| {
+            for (0..self.entity_count) |entity_index| {
+                component.deinit(allocator, @ptrCast(&buffer[entity_index * component.size]));
+            }
+        }
+
+        allocator.free(self.entity_ids);
         for (self.data) |value| allocator.free(value);
         allocator.free(self.data);
-        allocator.free(self.entities);
+        allocator.free(self.sized_components);
+        allocator.free(self.marker_component_ids);
     }
 
     pub fn addEntity(
         self: *Archetype,
         allocator: std.mem.Allocator,
-        entity: Entity,
-        components: anytype,
+        entity_id: u32,
+        component_data: []const ComponentData,
     ) !u32 {
+        if (component_data.len != self.sized_components.len + self.marker_component_ids.len)
+            return Error.ComponentMismatch;
+
         const entity_index = self.entity_count;
-        const fields = std.meta.fields(@TypeOf(components));
-        const passed = comptime componentTypes(@TypeOf(components));
-        const sized = comptime sizedComponents(passed);
-        const markers = comptime markerComponents(passed);
+        if (self.entity_count == self.entity_ids.len) self.growTo(allocator, self.entity_ids.len * 2);
 
-        if (sized.len != self.component_ids.len) return Error.ComponentMismatch;
-        if (markers.len != self.marker_ids.len) return Error.ComponentMismatch;
-
-        inline for (markers) |component| {
-            if (self.findMarkerIndex(hash(component)) == null) return Error.UnknownComponent;
+        for (component_data) |component| {
+            if (component.bytes) |bytes| {
+                const index = self.findComponentIndex(component.id) orelse return Error.UnknownComponent;
+                const size = self.sized_components[index].size;
+                if (bytes.len != size) return Error.ComponentMismatch;
+                @memcpy(self.data[index][entity_index * size .. (entity_index + 1) * size], bytes);
+            } else {
+                if (self.findMarkerIndex(component.id) == null) return Error.UnknownComponent;
+            }
         }
 
-        if (self.entity_count == self.entities.len) self.grow(allocator);
-
-        inline for (fields) |field| {
-            if (comptime @sizeOf(field.type) == 0) continue;
-
-            const idx = self.findComponentIndex(hash(field.type)) orelse {
-                return Error.UnknownComponent;
-            };
-
-            const value = @field(components, field.name);
-            const size = self.component_sizes[idx];
-            @memcpy(
-                self.data[idx][entity_index * size .. (entity_index + 1) * size],
-                std.mem.asBytes(&value),
-            );
-        }
-
-        self.entities[entity_index] = entity;
+        self.entity_ids[entity_index] = entity_id;
         self.entity_count += 1;
         return entity_index;
     }
 
-    pub fn removeEntity(
-        self: *Archetype,
-        entity_index: u32,
-        allocator: std.mem.Allocator,
-    ) ?RelocatedEntity {
+    pub fn removeEntity(self: *Archetype, allocator: std.mem.Allocator, entity_index: u32) ?u32 {
         if (entity_index >= self.entity_count) return null;
 
-        for (self.data, self.component_sizes, self.component_deinits) |buffer, size, deinit_| {
-            if (deinit_) |deinit_function| {
-                deinit_function(@ptrCast(&buffer[entity_index * size]), allocator);
-            }
+        for (self.data, self.sized_components) |buffer, component| {
+            component.deinit(allocator, @ptrCast(&buffer[entity_index * component.size]));
         }
 
         const last_index = self.entity_count - 1;
@@ -190,755 +124,837 @@ pub const Archetype = struct {
 
         if (entity_index == last_index) return null;
 
-        for (self.data, self.component_sizes) |buffer, size| {
+        for (self.data, self.sized_components) |buffer, component| {
             @memcpy(
-                buffer[entity_index * size .. (entity_index + 1) * size],
-                buffer[last_index * size .. (last_index + 1) * size],
+                buffer[entity_index * component.size .. (entity_index + 1) * component.size],
+                buffer[last_index * component.size .. (last_index + 1) * component.size],
             );
         }
 
-        const relocated_entity = self.entities[last_index];
-        self.entities[entity_index] = relocated_entity;
-
-        return .{ .entity = relocated_entity, .entity_index = entity_index };
+        const relocated_entity = self.entity_ids[last_index];
+        self.entity_ids[entity_index] = relocated_entity;
+        return relocated_entity;
     }
 
-    pub fn getComponents(
-        self: *Archetype,
-        entity_index: u32,
-        comptime components: []const type,
-    ) !EntityComponents(components) {
-        if (entity_index >= self.entity_count) return Error.InvalidEntityIndex;
-
-        var result: EntityComponents(components) = undefined;
-
-        inline for (components, 0..) |component, idx| {
-            if (comptime @sizeOf(component) == 0) {
-                if (self.findMarkerIndex(hash(component)) == null) return Error.UnknownComponent;
-                result[idx] = emptyInstance(component);
-                continue;
-            }
-
-            const component_idx = self.findComponentIndex(hash(component)) orelse {
-                return Error.UnknownComponent;
-            };
-
-            const size = self.component_sizes[component_idx];
-            result[idx] = @ptrCast(@alignCast(&self.data[component_idx][entity_index * size]));
+    pub fn getComponentBytes(self: *Archetype, entity_index: u32, component_id: u64) ?[]u8 {
+        if (entity_index >= self.entity_count) {
+            panic("Archetype.getComponentBytes: entity index {d} is out of bounds, the archetype has {d} entities", .{ entity_index, self.entity_count });
         }
 
-        return result;
+        const index = self.findComponentIndex(component_id) orelse return null;
+        const size = self.sized_components[index].size;
+        return self.data[index][entity_index * size .. (entity_index + 1) * size];
     }
 
-    pub fn hasComponents(self: *const Archetype, comptime components: []const type) bool {
-        inline for (components) |component| {
-            if (comptime @sizeOf(component) == 0) {
-                if (self.findMarkerIndex(hash(component)) == null) return false;
-            } else if (self.findComponentIndex(hash(component)) == null) return false;
-        }
-        return true;
-    }
-
-    pub fn ensureTotalCapacity(
-        self: *Archetype,
-        allocator: std.mem.Allocator,
-        capacity: usize,
-    ) void {
-        if (capacity > self.entities.len) self.growTo(allocator, capacity);
-    }
-
-    fn grow(self: *Archetype, allocator: std.mem.Allocator) void {
-        self.growTo(allocator, self.entities.len * 2);
+    pub fn hasComponent(self: *const Archetype, component_id: u64) bool {
+        if (self.findMarkerIndex(component_id) != null) return true;
+        if (self.findComponentIndex(component_id) != null) return true;
+        return false;
     }
 
     fn growTo(self: *Archetype, allocator: std.mem.Allocator, new_capacity: usize) void {
-        self.entities = allocator.realloc(self.entities, new_capacity) catch
-            panic("Archetype.growTo: out of memory\n", .{});
+        self.entity_ids = allocator.realloc(self.entity_ids, new_capacity) catch
+            panicOom("Archetype.growTo");
 
-        for (self.data, self.component_sizes) |*buffer, size| {
-            buffer.* = allocator.realloc(buffer.*, new_capacity * size) catch
-                panic("Archetype.growTo: out of memory\n", .{});
+        for (self.data, self.sized_components) |*buffer, component| {
+            buffer.* = allocator.realloc(buffer.*, new_capacity * component.size) catch
+                panicOom("Archetype.growTo");
         }
     }
 
     fn findComponentIndex(self: *const Archetype, component_id: u64) ?usize {
-        return findId(self.component_ids, component_id);
+        return std.sort.binarySearch(ComponentDescriptor, self.sized_components, component_id, ComponentDescriptor.orderById);
     }
 
     fn findMarkerIndex(self: *const Archetype, component_id: u64) ?usize {
-        return findId(self.marker_ids, component_id);
+        return std.sort.binarySearch(u64, self.marker_component_ids, component_id, struct {
+            fn order(context: u64, item: u64) std.math.Order {
+                return std.math.order(context, item);
+            }
+        }.order);
     }
 };
 
-fn findId(ids: []const u64, component_id: u64) ?usize {
-    return std.sort.binarySearch(u64, ids, component_id, struct {
-        fn order(context: u64, item: u64) std.math.Order {
-            return std.math.order(context, item);
-        }
-    }.order);
-}
-
-fn emptyInstance(comptime component: type) *component {
-    return &struct {
-        var instance: component = .{};
-    }.instance;
-}
-
-pub const RelocatedEntity = struct {
-    entity: Entity,
-    entity_index: u32,
-};
-
-const DeinitFunction = *const fn (ptr: *anyopaque, allocator: std.mem.Allocator) void;
-fn getDeinitFunctionFor(comptime component: type) ?DeinitFunction {
-    if (!std.meta.hasFn(component, "deinit")) return null;
-
-    const params = @typeInfo(@TypeOf(component.deinit)).@"fn".params;
-
-    return switch (params.len) {
-        1 => struct {
-            fn wrapper(ptr: *anyopaque, _: std.mem.Allocator) void {
-                @as(*component, @ptrCast(@alignCast(ptr))).deinit();
-            }
-        }.wrapper,
-        2 => struct {
-            fn wrapper(ptr: *anyopaque, allocator: std.mem.Allocator) void {
-                @as(*component, @ptrCast(@alignCast(ptr))).deinit(allocator);
-            }
-        }.wrapper,
-        else => @compileError("unsupported deinit signature for " ++ @typeName(component)),
-    };
-}
-
-fn noOpLifecycleFunctionsFor(comptime component: type) LifecycleFunctions {
-    _ = component;
-    return .{
-        .added = struct {
-            fn call(_: *anyopaque, _: std.mem.Allocator, _: Entity) void {}
-        }.call,
-        .destroying = struct {
-            fn call(_: *anyopaque, _: std.mem.Allocator, _: Entity) void {}
-        }.call,
-    };
-}
-
-test "Archetype sorts the components on initialization" {
+test "init: sorts sized components by id" {
     const allocator = std.testing.allocator;
 
-    const Type = struct {
-        data: [33]u8,
-    };
+    const First = struct { value: u64 };
+    const Second = struct { data: [33]u8 };
 
-    const Value = struct {
-        value: u64,
-    };
+    const first = ComponentDescriptor.from(First);
+    const second = ComponentDescriptor.from(Second);
 
-    const expected_ids: []const u64 = &.{ 9047713391308399252, 15171739973735874036 }; //Value, Type
-    const expected_sizes: []const u32 = &.{ @sizeOf(u64), @sizeOf(Type) };
+    var forward = Archetype.init(allocator, &.{ first, second }, .{});
+    defer forward.deinit(allocator);
 
-    var archetype = try Archetype.init(allocator, &[_]type{ Value, Type }, null, noOpLifecycleFunctionsFor);
-    try std.testing.expectEqualSlices(u64, expected_ids, archetype.component_ids);
-    try std.testing.expectEqualSlices(u32, expected_sizes, archetype.component_sizes);
-    archetype.deinit(allocator);
+    var reverse = Archetype.init(allocator, &.{ second, first }, .{});
+    defer reverse.deinit(allocator);
 
-    archetype = try Archetype.init(allocator, &[_]type{ Type, Value }, null, noOpLifecycleFunctionsFor);
-    try std.testing.expectEqualSlices(u64, expected_ids, archetype.component_ids);
-    try std.testing.expectEqualSlices(u32, expected_sizes, archetype.component_sizes);
-    archetype.deinit(allocator);
+    try std.testing.expect(forward.sized_components[0].id < forward.sized_components[1].id);
+    try std.testing.expectEqual(forward.sized_components[0].id, reverse.sized_components[0].id);
+    try std.testing.expectEqual(forward.sized_components[1].id, reverse.sized_components[1].id);
 }
 
-test "Archetype keeps marker components out of the component arrays" {
-    const allocator = std.testing.allocator;
-
-    const Player = struct {};
-    const Position = struct { x: f32, y: f32 };
-
-    var archetype = try Archetype.init(
-        allocator,
-        &.{ Player, Position },
-        null,
-        noOpLifecycleFunctionsFor,
-    );
-    defer archetype.deinit(allocator);
-
-    try std.testing.expectEqualSlices(u64, &.{hash(Position)}, archetype.component_ids);
-    try std.testing.expectEqualSlices(u64, &.{hash(Player)}, archetype.marker_ids);
-    try std.testing.expectEqual(1, archetype.data.len);
-    try std.testing.expectEqual(1, archetype.component_sizes.len);
-    try std.testing.expectEqual(1, archetype.component_deinits.len);
-}
-
-test "Archetype keeps a lifecycle hook for every component including markers" {
-    const allocator = std.testing.allocator;
-
-    const Player = struct {};
-    const Position = struct { x: f32, y: f32 };
-
-    var archetype = try Archetype.init(
-        allocator,
-        &.{ Player, Position },
-        null,
-        noOpLifecycleFunctionsFor,
-    );
-    defer archetype.deinit(allocator);
-
-    try std.testing.expectEqual(2, archetype.component_added.len);
-    try std.testing.expectEqual(2, archetype.component_destroying.len);
-}
-
-test "Archetype sorts marker ids" {
+test "init: sorts marker component ids" {
     const allocator = std.testing.allocator;
 
     const Player = struct {};
     const Frozen = struct {};
 
-    const expected: []const u64 = if (hash(Player) < hash(Frozen))
-        &.{ hash(Player), hash(Frozen) }
-    else
-        &.{ hash(Frozen), hash(Player) };
+    const player = ComponentDescriptor.from(Player);
+    const frozen = ComponentDescriptor.from(Frozen);
 
-    var archetype = try Archetype.init(allocator, &.{ Player, Frozen }, null, noOpLifecycleFunctionsFor);
-    try std.testing.expectEqualSlices(u64, expected, archetype.marker_ids);
-    archetype.deinit(allocator);
+    var forward = Archetype.init(allocator, &.{ player, frozen }, .{});
+    defer forward.deinit(allocator);
 
-    archetype = try Archetype.init(allocator, &.{ Frozen, Player }, null, noOpLifecycleFunctionsFor);
-    try std.testing.expectEqualSlices(u64, expected, archetype.marker_ids);
-    archetype.deinit(allocator);
+    var reverse = Archetype.init(allocator, &.{ frozen, player }, .{});
+    defer reverse.deinit(allocator);
+
+    try std.testing.expect(forward.marker_component_ids[0] < forward.marker_component_ids[1]);
+    try std.testing.expectEqualSlices(u64, forward.marker_component_ids, reverse.marker_component_ids);
 }
 
-test "hasComponents matches marker components" {
-    const allocator = std.testing.allocator;
-
-    const Player = struct {};
-    const Frozen = struct {};
-    const Position = struct { x: f32, y: f32 };
-
-    var archetype = try Archetype.init(
-        allocator,
-        &.{ Player, Position },
-        null,
-        noOpLifecycleFunctionsFor,
-    );
-    defer archetype.deinit(allocator);
-
-    try std.testing.expect(archetype.hasComponents(&.{ Player, Position }));
-    try std.testing.expect(archetype.hasComponents(&.{Player}));
-    try std.testing.expect(!archetype.hasComponents(&.{Frozen}));
-    try std.testing.expect(!archetype.hasComponents(&.{ Frozen, Position }));
-}
-
-test "addEntity returns Error.ComponentMismatch when a marker component is missing" {
+test "init: keeps marker components out of the sized components" {
     const allocator = std.testing.allocator;
 
     const Player = struct {};
     const Position = struct { x: f32, y: f32 };
 
-    var archetype = try Archetype.init(
+    const player = ComponentDescriptor.from(Player);
+    const position = ComponentDescriptor.from(Position);
+
+    var archetype = Archetype.init(allocator, &.{ player, position }, .{});
+    defer archetype.deinit(allocator);
+
+    try std.testing.expectEqual(1, archetype.sized_components.len);
+    try std.testing.expectEqual(position.id, archetype.sized_components[0].id);
+    try std.testing.expectEqualSlices(u64, &.{player.id}, archetype.marker_component_ids);
+}
+
+test "init: allocates one data buffer per sized component" {
+    const allocator = std.testing.allocator;
+
+    const Small = struct { value: u64 };
+    const Large = struct { data: [33]u8 };
+
+    var archetype = Archetype.init(
         allocator,
-        &.{ Player, Position },
-        null,
-        noOpLifecycleFunctionsFor,
+        &.{ ComponentDescriptor.from(Small), ComponentDescriptor.from(Large) },
+        .{},
     );
     defer archetype.deinit(allocator);
 
-    try std.testing.expectError(
-        Error.ComponentMismatch,
-        archetype.addEntity(
-            allocator,
-            .{ .id = 0, .generation = 0 },
-            .{Position{ .x = 1, .y = 2 }},
-        ),
-    );
+    try std.testing.expectEqual(2, archetype.data.len);
+    for (archetype.data, archetype.sized_components) |buffer, component| {
+        try std.testing.expectEqual(preallocated_entities_count * component.size, buffer.len);
+    }
 }
 
-test "addEntity returns Error.UnknownComponent for a marker the archetype does not have" {
+test "init: allocates no data buffer for a marker only archetype" {
     const allocator = std.testing.allocator;
 
     const Player = struct {};
-    const Frozen = struct {};
 
-    var archetype = try Archetype.init(allocator, &.{Player}, null, noOpLifecycleFunctionsFor);
+    var archetype = Archetype.init(allocator, &.{ComponentDescriptor.from(Player)}, .{});
     defer archetype.deinit(allocator);
 
-    try std.testing.expectError(
-        Error.UnknownComponent,
-        archetype.addEntity(allocator, .{ .id = 0, .generation = 0 }, .{Frozen{}}),
-    );
+    try std.testing.expectEqual(0, archetype.data.len);
+    try std.testing.expectEqual(0, archetype.sized_components.len);
+    try std.testing.expectEqual(preallocated_entities_count, archetype.entity_ids.len);
 }
 
-test "Archetype allocates as many component arrays as passed component_ids on initialization" {
-    const allocator = std.testing.allocator;
-
-    const A = struct { value: u64 };
-    const B = struct { value: f32 };
-    const C = struct { value: u8 };
-
-    var archetype = try Archetype.init(allocator, &.{ A, B, C }, null, noOpLifecycleFunctionsFor);
-    defer archetype.deinit(allocator);
-
-    try std.testing.expectEqual(3, archetype.data.len);
-}
-
-test "Archetype preallocates memory for entities on initialization" {
-    const allocator = std.testing.allocator;
-
-    const Type = struct {
-        data: [54]u8,
-    };
-
-    var archetype = try Archetype.init(allocator, &.{Type}, null, noOpLifecycleFunctionsFor);
-    defer archetype.deinit(allocator);
-
-    try std.testing.expectEqual(preallocated_entities_count * @sizeOf(Type), archetype.data[0].len);
-    try std.testing.expectEqual(preallocated_entities_count, archetype.entities.len);
-}
-
-test "Can add entities to archetype" {
-    const allocator = std.testing.allocator;
-
-    const Type = struct {
-        data: u32,
-    };
-
-    const Value = struct {
-        value: u64,
-    };
-
-    var archetype = try Archetype.init(allocator, &.{ Type, Value }, null, noOpLifecycleFunctionsFor);
-    defer archetype.deinit(allocator);
-
-    const type_ = Type{ .data = 112 };
-    const value_ = Value{ .value = 74 };
-
-    const entity_index = try archetype.addEntity(
-        allocator,
-        .{ .id = 0, .generation = 0 },
-        .{ type_, value_ },
-    );
-
-    const type_idx = std.mem.indexOfScalar(u64, archetype.component_ids, hash(Type)).?;
-    const value_idx = std.mem.indexOfScalar(u64, archetype.component_ids, hash(Value)).?;
-
-    const returned_type = @as(*Type, @ptrCast(@alignCast(archetype.data[type_idx].ptr)));
-    const returned_value = @as(*Value, @ptrCast(@alignCast(archetype.data[value_idx].ptr)));
-
-    try std.testing.expectEqual(0, entity_index);
-    try std.testing.expectEqual(1, archetype.entity_count);
-    try std.testing.expectEqual(type_, returned_type.*);
-    try std.testing.expectEqual(value_, returned_value.*);
-}
-
-test "addEntity returns Error.ComponentMismatch when the wrong number of components is passed" {
-    const allocator = std.testing.allocator;
-
-    const Type = struct { data: u32 };
-    const Value = struct { value: u64 };
-
-    var archetype = try Archetype.init(allocator, &.{ Type, Value }, null, noOpLifecycleFunctionsFor);
-    defer archetype.deinit(allocator);
-
-    try std.testing.expectError(
-        Error.ComponentMismatch,
-        archetype.addEntity(allocator, .{ .id = 0, .generation = 0 }, .{Type{ .data = 1 }}),
-    );
-}
-
-test "addEntity returns Error.UnknownComponent when a passed component type is not in the archetype" {
-    const allocator = std.testing.allocator;
-
-    const Type = struct { data: u32 };
-    const Value = struct { value: u64 };
-
-    var archetype = try Archetype.init(allocator, &.{Type}, null, noOpLifecycleFunctionsFor);
-    defer archetype.deinit(allocator);
-
-    try std.testing.expectError(
-        Error.UnknownComponent,
-        archetype.addEntity(allocator, .{ .id = 0, .generation = 0 }, .{Value{ .value = 1 }}),
-    );
-}
-
-test "Archetype stores the entity passed to addEntity" {
+test "init: preallocates the default capacity" {
     const allocator = std.testing.allocator;
 
     const Value = struct { value: u64 };
 
-    var archetype = try Archetype.init(allocator, &.{Value}, null, noOpLifecycleFunctionsFor);
+    var archetype = Archetype.init(allocator, &.{ComponentDescriptor.from(Value)}, .{});
     defer archetype.deinit(allocator);
 
-    const first = Entity{ .id = 3, .generation = 1 };
-    const second = Entity{ .id = 7, .generation = 2 };
-
-    const first_index = try archetype.addEntity(allocator, first, .{Value{ .value = 1 }});
-    const second_index = try archetype.addEntity(allocator, second, .{Value{ .value = 2 }});
-
-    try std.testing.expectEqual(first, archetype.entities[first_index]);
-    try std.testing.expectEqual(second, archetype.entities[second_index]);
+    try std.testing.expectEqual(0, archetype.entity_count);
+    try std.testing.expectEqual(preallocated_entities_count, archetype.entity_ids.len);
+    try std.testing.expectEqual(preallocated_entities_count * @sizeOf(Value), archetype.data[0].len);
 }
 
-test "Archetype.deinit deinits resources owned by stored components" {
+test "init: reserves the requested capacity" {
     const allocator = std.testing.allocator;
 
-    const OwningComponent = struct {
-        buffer: []u8,
+    const Value = struct { value: u64 };
 
-        fn init(alloc: std.mem.Allocator) !@This() {
-            return .{ .buffer = try alloc.alloc(u8, 8) };
-        }
+    var archetype = Archetype.init(allocator, &.{ComponentDescriptor.from(Value)}, .{ .capacity = 64 });
+    defer archetype.deinit(allocator);
 
-        pub fn deinit(self: *@This(), alloc: std.mem.Allocator) void {
-            alloc.free(self.buffer);
-        }
-    };
+    try std.testing.expectEqual(64, archetype.entity_ids.len);
+    try std.testing.expectEqual(64 * @sizeOf(Value), archetype.data[0].len);
+}
 
-    const NonOwningComponent = struct {
-        var deinit_calls: usize = 0;
+test "init: accepts an archetype with no components" {
+    const allocator = std.testing.allocator;
+
+    var archetype = Archetype.init(allocator, &.{}, .{});
+    defer archetype.deinit(allocator);
+
+    try std.testing.expectEqual(0, archetype.data.len);
+    try std.testing.expectEqual(0, archetype.sized_components.len);
+    try std.testing.expectEqual(0, archetype.marker_component_ids.len);
+
+    try std.testing.expectEqual(0, try archetype.addEntity(allocator, 7, &.{}));
+    try std.testing.expectEqual(7, archetype.entity_ids[0]);
+}
+
+test "deinit: calls deinit on every stored component" {
+    const allocator = std.testing.allocator;
+
+    const Counted = struct {
+        var calls: usize = 0;
 
         value: u32,
 
-        pub fn deinit(self: *@This()) void {
-            _ = self;
-            deinit_calls += 1;
+        pub fn deinit(_: *@This()) void {
+            calls += 1;
         }
     };
 
-    var archetype = try Archetype.init(allocator, &.{ OwningComponent, NonOwningComponent }, null, noOpLifecycleFunctionsFor);
+    const counted = ComponentDescriptor.from(Counted);
 
-    const owning = try OwningComponent.init(allocator);
-    const non_owning = NonOwningComponent{ .value = 1 };
-    _ = try archetype.addEntity(
-        allocator,
-        .{ .id = 0, .generation = 0 },
-        .{ owning, non_owning },
-    );
+    var archetype = Archetype.init(allocator, &.{counted}, .{});
+
+    const first = Counted{ .value = 1 };
+    const second = Counted{ .value = 2 };
+    _ = try archetype.addEntity(allocator, 0, &.{.{ .id = counted.id, .bytes = std.mem.asBytes(&first) }});
+    _ = try archetype.addEntity(allocator, 1, &.{.{ .id = counted.id, .bytes = std.mem.asBytes(&second) }});
 
     archetype.deinit(allocator);
 
-    try std.testing.expectEqual(1, NonOwningComponent.deinit_calls);
+    try std.testing.expectEqual(2, Counted.calls);
 }
 
-test "removeEntity returns null and does not relocate anything when removing the last entity" {
+test "deinit: frees memory owned by stored components" {
+    const allocator = std.testing.allocator;
+
+    const Owning = struct {
+        buffer: []u8,
+
+        pub fn deinit(self: *@This(), inner: std.mem.Allocator) void {
+            inner.free(self.buffer);
+        }
+    };
+
+    const owning = ComponentDescriptor.from(Owning);
+
+    var archetype = Archetype.init(allocator, &.{owning}, .{});
+
+    const value = Owning{ .buffer = try allocator.alloc(u8, 8) };
+    _ = try archetype.addEntity(allocator, 0, &.{.{ .id = owning.id, .bytes = std.mem.asBytes(&value) }});
+
+    archetype.deinit(allocator);
+}
+
+test "deinit: ignores rows past the entity count" {
+    const allocator = std.testing.allocator;
+
+    const Counted = struct {
+        var calls: usize = 0;
+
+        value: u32,
+
+        pub fn deinit(_: *@This()) void {
+            calls += 1;
+        }
+    };
+
+    const counted = ComponentDescriptor.from(Counted);
+
+    var archetype = Archetype.init(allocator, &.{counted}, .{ .capacity = 8 });
+
+    const value = Counted{ .value = 1 };
+    _ = try archetype.addEntity(allocator, 0, &.{.{ .id = counted.id, .bytes = std.mem.asBytes(&value) }});
+
+    archetype.deinit(allocator);
+
+    try std.testing.expectEqual(1, Counted.calls);
+}
+
+test "addEntity: returns the index the entity was stored at" {
     const allocator = std.testing.allocator;
 
     const Value = struct { value: u64 };
+    const value = ComponentDescriptor.from(Value);
 
-    var archetype = try Archetype.init(allocator, &.{Value}, null, noOpLifecycleFunctionsFor);
+    var archetype = Archetype.init(allocator, &.{value}, .{});
     defer archetype.deinit(allocator);
 
-    const first = Entity{ .id = 1, .generation = 0 };
-    const second = Entity{ .id = 2, .generation = 0 };
+    const first = Value{ .value = 1 };
+    const second = Value{ .value = 2 };
 
-    const first_index = try archetype.addEntity(allocator, first, .{Value{ .value = 10 }});
-    const second_index = try archetype.addEntity(allocator, second, .{Value{ .value = 20 }});
-
-    const relocated = archetype.removeEntity(second_index, allocator);
-
-    try std.testing.expectEqual(null, relocated);
-    try std.testing.expectEqual(1, archetype.entity_count);
-    try std.testing.expectEqual(first, archetype.entities[first_index]);
-
-    const returned_value = @as(*Value, @ptrCast(@alignCast(archetype.data[0].ptr)));
-    try std.testing.expectEqual(Value{ .value = 10 }, returned_value.*);
-}
-
-test "removeEntity is a no-op when entity_index is out of bounds" {
-    const allocator = std.testing.allocator;
-
-    const Value = struct { value: u64 };
-
-    var archetype = try Archetype.init(allocator, &.{Value}, null, noOpLifecycleFunctionsFor);
-    defer archetype.deinit(allocator);
-
-    try std.testing.expectEqual(null, archetype.removeEntity(0, allocator));
-    try std.testing.expectEqual(0, archetype.entity_count);
-
-    _ = try archetype.addEntity(
-        allocator,
-        .{ .id = 0, .generation = 0 },
-        .{Value{ .value = 1 }},
+    try std.testing.expectEqual(
+        0,
+        try archetype.addEntity(allocator, 10, &.{.{ .id = value.id, .bytes = std.mem.asBytes(&first) }}),
     );
-
-    try std.testing.expectEqual(null, archetype.removeEntity(1, allocator));
-    try std.testing.expectEqual(1, archetype.entity_count);
-}
-
-test "removeEntity swaps the last entity into the removed slot and returns it as relocated" {
-    const allocator = std.testing.allocator;
-
-    const Value = struct { value: u64 };
-
-    var archetype = try Archetype.init(allocator, &.{Value}, null, noOpLifecycleFunctionsFor);
-    defer archetype.deinit(allocator);
-
-    const first = Entity{ .id = 1, .generation = 0 };
-    const second = Entity{ .id = 2, .generation = 0 };
-    const third = Entity{ .id = 3, .generation = 0 };
-
-    _ = try archetype.addEntity(allocator, first, .{Value{ .value = 10 }});
-    _ = try archetype.addEntity(allocator, second, .{Value{ .value = 20 }});
-    _ = try archetype.addEntity(allocator, third, .{Value{ .value = 30 }});
-
-    const relocated = archetype.removeEntity(0, allocator);
-
-    try std.testing.expectEqual(RelocatedEntity{ .entity = third, .entity_index = 0 }, relocated);
+    try std.testing.expectEqual(
+        1,
+        try archetype.addEntity(allocator, 11, &.{.{ .id = value.id, .bytes = std.mem.asBytes(&second) }}),
+    );
     try std.testing.expectEqual(2, archetype.entity_count);
-    try std.testing.expectEqual(third, archetype.entities[0]);
-
-    const returned_value = @as(*Value, @ptrCast(@alignCast(archetype.data[0].ptr)));
-    try std.testing.expectEqual(Value{ .value = 30 }, returned_value.*);
 }
 
-test "removeEntity deinits resources owned by the removed entity's components" {
-    const allocator = std.testing.allocator;
-
-    const OwningComponent = struct {
-        buffer: []u8,
-
-        fn init(alloc: std.mem.Allocator) !@This() {
-            return .{ .buffer = try alloc.alloc(u8, 8) };
-        }
-
-        pub fn deinit(self: *@This(), alloc: std.mem.Allocator) void {
-            alloc.free(self.buffer);
-        }
-    };
-
-    const NonOwningComponent = struct {
-        var deinit_calls: usize = 0;
-
-        value: u32,
-
-        pub fn deinit(self: *@This()) void {
-            _ = self;
-            deinit_calls += 1;
-        }
-    };
-
-    var archetype = try Archetype.init(allocator, &.{ OwningComponent, NonOwningComponent }, null, noOpLifecycleFunctionsFor);
-    defer archetype.deinit(allocator);
-
-    const owning = try OwningComponent.init(allocator);
-    const non_owning = NonOwningComponent{ .value = 1 };
-    const entity_index = try archetype.addEntity(
-        allocator,
-        .{ .id = 0, .generation = 0 },
-        .{ owning, non_owning },
-    );
-
-    _ = archetype.removeEntity(entity_index, allocator);
-
-    try std.testing.expectEqual(1, NonOwningComponent.deinit_calls);
-    try std.testing.expectEqual(0, archetype.entity_count);
-}
-
-test "Archetype grows its arrays when it runs out of capacity" {
+test "addEntity: stores the entity id at the returned index" {
     const allocator = std.testing.allocator;
 
     const Value = struct { value: u64 };
+    const value = ComponentDescriptor.from(Value);
 
-    var archetype = try Archetype.init(allocator, &.{Value}, null, noOpLifecycleFunctionsFor);
+    var archetype = Archetype.init(allocator, &.{value}, .{});
+    defer archetype.deinit(allocator);
+
+    const stored = Value{ .value = 1 };
+    const index = try archetype.addEntity(allocator, 42, &.{.{ .id = value.id, .bytes = std.mem.asBytes(&stored) }});
+
+    try std.testing.expectEqual(42, archetype.entity_ids[index]);
+}
+
+test "addEntity: copies the bytes into the column matching each component" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+    const Health = struct { points: u64 };
+
+    const position = ComponentDescriptor.from(Position);
+    const health = ComponentDescriptor.from(Health);
+
+    var archetype = Archetype.init(allocator, &.{ position, health }, .{});
+    defer archetype.deinit(allocator);
+
+    const stored_position = Position{ .x = 1, .y = 2 };
+    const stored_health = Health{ .points = 99 };
+    _ = try archetype.addEntity(allocator, 0, &.{
+        .{ .id = position.id, .bytes = std.mem.asBytes(&stored_position) },
+        .{ .id = health.id, .bytes = std.mem.asBytes(&stored_health) },
+    });
+
+    try std.testing.expectEqualSlices(
+        u8,
+        std.mem.asBytes(&stored_position),
+        archetype.getComponentBytes(0, position.id).?,
+    );
+    try std.testing.expectEqualSlices(
+        u8,
+        std.mem.asBytes(&stored_health),
+        archetype.getComponentBytes(0, health.id).?,
+    );
+}
+
+test "addEntity: ignores the order the component data is passed in" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+    const Health = struct { points: u64 };
+
+    const position = ComponentDescriptor.from(Position);
+    const health = ComponentDescriptor.from(Health);
+
+    var archetype = Archetype.init(allocator, &.{ position, health }, .{});
+    defer archetype.deinit(allocator);
+
+    const stored_position = Position{ .x = 1, .y = 2 };
+    const stored_health = Health{ .points = 99 };
+    _ = try archetype.addEntity(allocator, 0, &.{
+        .{ .id = health.id, .bytes = std.mem.asBytes(&stored_health) },
+        .{ .id = position.id, .bytes = std.mem.asBytes(&stored_position) },
+    });
+
+    try std.testing.expectEqualSlices(
+        u8,
+        std.mem.asBytes(&stored_position),
+        archetype.getComponentBytes(0, position.id).?,
+    );
+}
+
+test "addEntity: accepts a marker component carrying no bytes" {
+    const allocator = std.testing.allocator;
+
+    const Player = struct {};
+    const Position = struct { x: f32, y: f32 };
+
+    const player = ComponentDescriptor.from(Player);
+    const position = ComponentDescriptor.from(Position);
+
+    var archetype = Archetype.init(allocator, &.{ player, position }, .{});
+    defer archetype.deinit(allocator);
+
+    const stored = Position{ .x = 1, .y = 2 };
+    _ = try archetype.addEntity(allocator, 0, &.{
+        .{ .id = player.id, .bytes = null },
+        .{ .id = position.id, .bytes = std.mem.asBytes(&stored) },
+    });
+
+    try std.testing.expectEqual(1, archetype.entity_count);
+}
+
+test "addEntity: returns ComponentMismatch when a component is missing" {
+    const allocator = std.testing.allocator;
+
+    const Player = struct {};
+    const Position = struct { x: f32, y: f32 };
+
+    const position = ComponentDescriptor.from(Position);
+
+    var archetype = Archetype.init(allocator, &.{ ComponentDescriptor.from(Player), position }, .{});
+    defer archetype.deinit(allocator);
+
+    const stored = Position{ .x = 1, .y = 2 };
+
+    try std.testing.expectError(
+        Error.ComponentMismatch,
+        archetype.addEntity(allocator, 0, &.{.{ .id = position.id, .bytes = std.mem.asBytes(&stored) }}),
+    );
+}
+
+test "addEntity: returns ComponentMismatch when the byte length differs from the component size" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+    const position = ComponentDescriptor.from(Position);
+
+    var archetype = Archetype.init(allocator, &.{position}, .{});
+    defer archetype.deinit(allocator);
+
+    const truncated: []const u8 = &.{ 0, 0, 0 };
+
+    try std.testing.expectError(
+        Error.ComponentMismatch,
+        archetype.addEntity(allocator, 0, &.{.{ .id = position.id, .bytes = truncated }}),
+    );
+}
+
+test "addEntity: returns UnknownComponent for a component the archetype does not have" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+    const Velocity = struct { dx: f32, dy: f32 };
+
+    var archetype = Archetype.init(allocator, &.{ComponentDescriptor.from(Position)}, .{});
+    defer archetype.deinit(allocator);
+
+    const stored = Velocity{ .dx = 1, .dy = 2 };
+
+    try std.testing.expectError(
+        Error.UnknownComponent,
+        archetype.addEntity(allocator, 0, &.{
+            .{ .id = ComponentDescriptor.from(Velocity).id, .bytes = std.mem.asBytes(&stored) },
+        }),
+    );
+}
+
+test "addEntity: returns UnknownComponent for a marker the archetype does not have" {
+    const allocator = std.testing.allocator;
+
+    const Player = struct {};
+    const Frozen = struct {};
+
+    var archetype = Archetype.init(allocator, &.{ComponentDescriptor.from(Player)}, .{});
+    defer archetype.deinit(allocator);
+
+    try std.testing.expectError(
+        Error.UnknownComponent,
+        archetype.addEntity(allocator, 0, &.{
+            .{ .id = ComponentDescriptor.from(Frozen).id, .bytes = null },
+        }),
+    );
+}
+
+test "addEntity: returns UnknownComponent when a sized component carries no bytes" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+    const position = ComponentDescriptor.from(Position);
+
+    var archetype = Archetype.init(allocator, &.{position}, .{});
+    defer archetype.deinit(allocator);
+
+    try std.testing.expectError(
+        Error.UnknownComponent,
+        archetype.addEntity(allocator, 0, &.{.{ .id = position.id, .bytes = null }}),
+    );
+}
+
+test "addEntity: returns UnknownComponent when a marker carries bytes" {
+    const allocator = std.testing.allocator;
+
+    const Player = struct {};
+    const player = ComponentDescriptor.from(Player);
+
+    var archetype = Archetype.init(allocator, &.{player}, .{});
+    defer archetype.deinit(allocator);
+
+    const bytes: []const u8 = &.{0};
+
+    try std.testing.expectError(
+        Error.UnknownComponent,
+        archetype.addEntity(allocator, 0, &.{.{ .id = player.id, .bytes = bytes }}),
+    );
+}
+
+test "addEntity: grows the arrays when the capacity is exhausted" {
+    const allocator = std.testing.allocator;
+
+    const Value = struct { value: u64 };
+    const value = ComponentDescriptor.from(Value);
+
+    var archetype = Archetype.init(allocator, &.{value}, .{});
     defer archetype.deinit(allocator);
 
     const count = preallocated_entities_count + 1;
 
     for (0..count) |index| {
-        const entity = Entity{ .id = @intCast(index), .generation = 0 };
-        _ = try archetype.addEntity(allocator, entity, .{Value{ .value = @intCast(index) }});
+        const stored = Value{ .value = @intCast(index) };
+        _ = try archetype.addEntity(allocator, @intCast(index), &.{
+            .{ .id = value.id, .bytes = std.mem.asBytes(&stored) },
+        });
     }
 
     try std.testing.expectEqual(count, archetype.entity_count);
-    try std.testing.expect(archetype.entities.len > preallocated_entities_count);
+    try std.testing.expect(archetype.entity_ids.len > preallocated_entities_count);
     try std.testing.expect(archetype.data[0].len >= count * @sizeOf(Value));
 
-    const values = @as([*]Value, @ptrCast(@alignCast(archetype.data[0].ptr)))[0..count];
-    for (values, 0..) |value, index| {
-        try std.testing.expectEqual(@as(u64, @intCast(index)), value.value);
-        try std.testing.expectEqual(@as(u32, @intCast(index)), archetype.entities[index].id);
+    for (0..count) |index| {
+        const expected = Value{ .value = @intCast(index) };
+        try std.testing.expectEqual(@as(u32, @intCast(index)), archetype.entity_ids[index]);
+        try std.testing.expectEqualSlices(
+            u8,
+            std.mem.asBytes(&expected),
+            archetype.getComponentBytes(@intCast(index), value.id).?,
+        );
     }
 }
 
-test "getComponents returns pointers to an entity's requested components" {
-    const allocator = std.testing.allocator;
-
-    const Position = struct { x: f32, y: f32 };
-    const Velocity = struct { dx: f32, dy: f32 };
-
-    var archetype = try Archetype.init(allocator, &.{ Position, Velocity }, null, noOpLifecycleFunctionsFor);
-    defer archetype.deinit(allocator);
-
-    const entity_index = try archetype.addEntity(
-        allocator,
-        .{ .id = 0, .generation = 0 },
-        .{ Position{ .x = 1, .y = 2 }, Velocity{ .dx = 3, .dy = 4 } },
-    );
-
-    const position, const velocity = try archetype.getComponents(
-        entity_index,
-        &.{ Position, Velocity },
-    );
-
-    try std.testing.expectEqual(Position{ .x = 1, .y = 2 }, position.*);
-    try std.testing.expectEqual(Velocity{ .dx = 3, .dy = 4 }, velocity.*);
-
-    position.x = 100;
-
-    const reread_position, _ = try archetype.getComponents(entity_index, &.{ Position, Velocity });
-    try std.testing.expectEqual(@as(f32, 100), reread_position.x);
-}
-
-test "getComponents returns Error.UnknownComponent for a type the archetype does not have" {
-    const allocator = std.testing.allocator;
-
-    const Position = struct { x: f32, y: f32 };
-    const Velocity = struct { dx: f32, dy: f32 };
-
-    var archetype = try Archetype.init(allocator, &.{Position}, null, noOpLifecycleFunctionsFor);
-    defer archetype.deinit(allocator);
-
-    const entity_index = try archetype.addEntity(
-        allocator,
-        .{ .id = 0, .generation = 0 },
-        .{Position{ .x = 1, .y = 2 }},
-    );
-
-    try std.testing.expectError(
-        Error.UnknownComponent,
-        archetype.getComponents(entity_index, &.{Velocity}),
-    );
-}
-
-test "getComponents returns Error.InvalidEntityIndex when entity_index is out of bounds" {
-    const allocator = std.testing.allocator;
-
-    const Position = struct { x: f32, y: f32 };
-
-    var archetype = try Archetype.init(allocator, &.{Position}, null, noOpLifecycleFunctionsFor);
-    defer archetype.deinit(allocator);
-
-    try std.testing.expectError(Error.InvalidEntityIndex, archetype.getComponents(0, &.{Position}));
-
-    _ = try archetype.addEntity(
-        allocator,
-        .{ .id = 0, .generation = 0 },
-        .{Position{ .x = 1, .y = 2 }},
-    );
-
-    try std.testing.expectError(Error.InvalidEntityIndex, archetype.getComponents(1, &.{Position}));
-}
-
-test "getComponents returns the correct entity's data when entity_index is not zero" {
-    const allocator = std.testing.allocator;
-
-    const Position = struct { x: f32, y: f32 };
-    const Velocity = struct { dx: f32, dy: f32 };
-
-    var archetype = try Archetype.init(allocator, &.{ Position, Velocity }, null, noOpLifecycleFunctionsFor);
-    defer archetype.deinit(allocator);
-
-    _ = try archetype.addEntity(
-        allocator,
-        .{ .id = 0, .generation = 0 },
-        .{ Position{ .x = 1, .y = 1 }, Velocity{ .dx = 1, .dy = 1 } },
-    );
-    const second_index = try archetype.addEntity(
-        allocator,
-        .{ .id = 1, .generation = 0 },
-        .{ Position{ .x = 2, .y = 2 }, Velocity{ .dx = 2, .dy = 2 } },
-    );
-    const third_index = try archetype.addEntity(
-        allocator,
-        .{ .id = 2, .generation = 0 },
-        .{ Position{ .x = 3, .y = 3 }, Velocity{ .dx = 3, .dy = 3 } },
-    );
-
-    const second_position, const second_velocity = try archetype.getComponents(
-        second_index,
-        &.{ Position, Velocity },
-    );
-    try std.testing.expectEqual(Position{ .x = 2, .y = 2 }, second_position.*);
-    try std.testing.expectEqual(Velocity{ .dx = 2, .dy = 2 }, second_velocity.*);
-
-    const third_position, const third_velocity = try archetype.getComponents(
-        third_index,
-        &.{ Position, Velocity },
-    );
-    try std.testing.expectEqual(Position{ .x = 3, .y = 3 }, third_position.*);
-    try std.testing.expectEqual(Velocity{ .dx = 3, .dy = 3 }, third_velocity.*);
-}
-
-test "hasComponents returns true when the archetype has every requested component" {
-    const allocator = std.testing.allocator;
-
-    const Position = struct { x: f32, y: f32 };
-    const Velocity = struct { dx: f32, dy: f32 };
-
-    var archetype = try Archetype.init(allocator, &.{ Position, Velocity }, null, noOpLifecycleFunctionsFor);
-    defer archetype.deinit(allocator);
-
-    try std.testing.expect(archetype.hasComponents(&.{ Position, Velocity }));
-}
-
-test "hasComponents returns true for a subset of the archetype's components" {
-    const allocator = std.testing.allocator;
-
-    const Position = struct { x: f32, y: f32 };
-    const Velocity = struct { dx: f32, dy: f32 };
-    const Health = struct { value: u32 };
-
-    var archetype = try Archetype.init(allocator, &.{ Position, Velocity, Health }, null, noOpLifecycleFunctionsFor);
-    defer archetype.deinit(allocator);
-
-    try std.testing.expect(archetype.hasComponents(&.{Position}));
-}
-
-test "hasComponents returns false when a requested component is missing" {
-    const allocator = std.testing.allocator;
-
-    const Position = struct { x: f32, y: f32 };
-    const Velocity = struct { dx: f32, dy: f32 };
-
-    var archetype = try Archetype.init(allocator, &.{Position}, null, noOpLifecycleFunctionsFor);
-    defer archetype.deinit(allocator);
-
-    try std.testing.expect(!archetype.hasComponents(&.{ Position, Velocity }));
-}
-
-test "Archetype.init reserves capacity up front when given one" {
+test "removeEntity: returns null when the index is out of bounds" {
     const allocator = std.testing.allocator;
 
     const Value = struct { value: u64 };
+    const value = ComponentDescriptor.from(Value);
 
-    var archetype = try Archetype.init(allocator, &.{Value}, 100, noOpLifecycleFunctionsFor);
+    var archetype = Archetype.init(allocator, &.{value}, .{});
     defer archetype.deinit(allocator);
 
-    try std.testing.expect(archetype.entities.len >= 100);
-    try std.testing.expect(archetype.data[0].len >= 100 * @sizeOf(Value));
+    const stored = Value{ .value = 1 };
+    _ = try archetype.addEntity(allocator, 0, &.{.{ .id = value.id, .bytes = std.mem.asBytes(&stored) }});
+
+    try std.testing.expectEqual(null, archetype.removeEntity(allocator, 1));
+    try std.testing.expectEqual(1, archetype.entity_count);
 }
 
-test "ensureTotalCapacity grows the arrays to at least the requested capacity" {
+test "removeEntity: returns null when the removed entity is the last row" {
     const allocator = std.testing.allocator;
 
     const Value = struct { value: u64 };
+    const value = ComponentDescriptor.from(Value);
 
-    var archetype = try Archetype.init(allocator, &.{Value}, null, noOpLifecycleFunctionsFor);
+    var archetype = Archetype.init(allocator, &.{value}, .{});
     defer archetype.deinit(allocator);
 
-    archetype.ensureTotalCapacity(allocator, 100);
+    const first = Value{ .value = 1 };
+    const second = Value{ .value = 2 };
+    _ = try archetype.addEntity(allocator, 10, &.{.{ .id = value.id, .bytes = std.mem.asBytes(&first) }});
+    const last = try archetype.addEntity(allocator, 11, &.{.{ .id = value.id, .bytes = std.mem.asBytes(&second) }});
 
-    try std.testing.expect(archetype.entities.len >= 100);
-    try std.testing.expect(archetype.data[0].len >= 100 * @sizeOf(Value));
+    try std.testing.expectEqual(null, archetype.removeEntity(allocator, last));
+    try std.testing.expectEqual(1, archetype.entity_count);
 }
 
-test "ensureTotalCapacity does nothing when capacity is already sufficient" {
+test "removeEntity: returns the id of the entity moved into the removed row" {
     const allocator = std.testing.allocator;
 
     const Value = struct { value: u64 };
+    const value = ComponentDescriptor.from(Value);
 
-    var archetype = try Archetype.init(allocator, &.{Value}, null, noOpLifecycleFunctionsFor);
+    var archetype = Archetype.init(allocator, &.{value}, .{});
     defer archetype.deinit(allocator);
 
-    const capacity_before = archetype.entities.len;
-    archetype.ensureTotalCapacity(allocator, preallocated_entities_count);
+    const first = Value{ .value = 1 };
+    const second = Value{ .value = 2 };
+    const removed = try archetype.addEntity(allocator, 10, &.{.{ .id = value.id, .bytes = std.mem.asBytes(&first) }});
+    _ = try archetype.addEntity(allocator, 11, &.{.{ .id = value.id, .bytes = std.mem.asBytes(&second) }});
 
-    try std.testing.expectEqual(capacity_before, archetype.entities.len);
+    try std.testing.expectEqual(11, archetype.removeEntity(allocator, removed));
+    try std.testing.expectEqual(1, archetype.entity_count);
+    try std.testing.expectEqual(11, archetype.entity_ids[removed]);
+}
+
+test "removeEntity: moves the last row's component bytes into the removed row" {
+    const allocator = std.testing.allocator;
+
+    const Value = struct { value: u64 };
+    const value = ComponentDescriptor.from(Value);
+
+    var archetype = Archetype.init(allocator, &.{value}, .{});
+    defer archetype.deinit(allocator);
+
+    const first = Value{ .value = 10 };
+    const second = Value{ .value = 20 };
+    const removed = try archetype.addEntity(allocator, 0, &.{.{ .id = value.id, .bytes = std.mem.asBytes(&first) }});
+    _ = try archetype.addEntity(allocator, 1, &.{.{ .id = value.id, .bytes = std.mem.asBytes(&second) }});
+
+    _ = archetype.removeEntity(allocator, removed);
+
+    try std.testing.expectEqualSlices(
+        u8,
+        std.mem.asBytes(&second),
+        archetype.getComponentBytes(removed, value.id).?,
+    );
+}
+
+test "removeEntity: moves only the last row when removing from the middle" {
+    const allocator = std.testing.allocator;
+
+    const Value = struct { value: u64 };
+    const value = ComponentDescriptor.from(Value);
+
+    var archetype = Archetype.init(allocator, &.{value}, .{});
+    defer archetype.deinit(allocator);
+
+    const first = Value{ .value = 100 };
+    const second = Value{ .value = 200 };
+    const third = Value{ .value = 300 };
+    const removed = try archetype.addEntity(allocator, 10, &.{.{ .id = value.id, .bytes = std.mem.asBytes(&first) }});
+    const kept = try archetype.addEntity(allocator, 11, &.{.{ .id = value.id, .bytes = std.mem.asBytes(&second) }});
+    _ = try archetype.addEntity(allocator, 12, &.{.{ .id = value.id, .bytes = std.mem.asBytes(&third) }});
+
+    try std.testing.expectEqual(12, archetype.removeEntity(allocator, removed));
+    try std.testing.expectEqual(2, archetype.entity_count);
+
+    try std.testing.expectEqual(12, archetype.entity_ids[removed]);
+    try std.testing.expectEqual(11, archetype.entity_ids[kept]);
+
+    try std.testing.expectEqualSlices(
+        u8,
+        std.mem.asBytes(&third),
+        archetype.getComponentBytes(removed, value.id).?,
+    );
+    try std.testing.expectEqualSlices(
+        u8,
+        std.mem.asBytes(&second),
+        archetype.getComponentBytes(kept, value.id).?,
+    );
+}
+
+test "removeEntity: is a no op when the row was already removed" {
+    const allocator = std.testing.allocator;
+
+    const Value = struct { value: u64 };
+    const value = ComponentDescriptor.from(Value);
+
+    var archetype = Archetype.init(allocator, &.{value}, .{});
+    defer archetype.deinit(allocator);
+
+    const first = Value{ .value = 1 };
+    const second = Value{ .value = 2 };
+    _ = try archetype.addEntity(allocator, 10, &.{.{ .id = value.id, .bytes = std.mem.asBytes(&first) }});
+    const last = try archetype.addEntity(allocator, 11, &.{.{ .id = value.id, .bytes = std.mem.asBytes(&second) }});
+
+    try std.testing.expectEqual(null, archetype.removeEntity(allocator, last));
+    try std.testing.expectEqual(null, archetype.removeEntity(allocator, last));
+    try std.testing.expectEqual(1, archetype.entity_count);
+    try std.testing.expectEqual(10, archetype.entity_ids[0]);
+}
+
+test "removeEntity: calls deinit only on the removed row" {
+    const allocator = std.testing.allocator;
+
+    const Counted = struct {
+        var calls: usize = 0;
+
+        value: u32,
+
+        pub fn deinit(_: *@This()) void {
+            calls += 1;
+        }
+    };
+
+    const counted = ComponentDescriptor.from(Counted);
+
+    var archetype = Archetype.init(allocator, &.{counted}, .{});
+    defer archetype.deinit(allocator);
+
+    const first = Counted{ .value = 1 };
+    const second = Counted{ .value = 2 };
+    const removed = try archetype.addEntity(allocator, 0, &.{.{ .id = counted.id, .bytes = std.mem.asBytes(&first) }});
+    _ = try archetype.addEntity(allocator, 1, &.{.{ .id = counted.id, .bytes = std.mem.asBytes(&second) }});
+
+    _ = archetype.removeEntity(allocator, removed);
+
+    try std.testing.expectEqual(1, Counted.calls);
+}
+
+test "removeEntity: frees memory owned by the removed row" {
+    const allocator = std.testing.allocator;
+
+    const Owning = struct {
+        buffer: []u8,
+
+        pub fn deinit(self: *@This(), inner: std.mem.Allocator) void {
+            inner.free(self.buffer);
+        }
+    };
+
+    const owning = ComponentDescriptor.from(Owning);
+
+    var archetype = Archetype.init(allocator, &.{owning}, .{});
+    defer archetype.deinit(allocator);
+
+    const first = Owning{ .buffer = try allocator.alloc(u8, 8) };
+    const second = Owning{ .buffer = try allocator.alloc(u8, 16) };
+    const removed = try archetype.addEntity(allocator, 0, &.{.{ .id = owning.id, .bytes = std.mem.asBytes(&first) }});
+    _ = try archetype.addEntity(allocator, 1, &.{.{ .id = owning.id, .bytes = std.mem.asBytes(&second) }});
+
+    _ = archetype.removeEntity(allocator, removed);
+}
+
+test "removeEntity: relocates the entity id in a marker only archetype" {
+    const allocator = std.testing.allocator;
+
+    const Player = struct {};
+    const player = ComponentDescriptor.from(Player);
+
+    var archetype = Archetype.init(allocator, &.{player}, .{});
+    defer archetype.deinit(allocator);
+
+    const removed = try archetype.addEntity(allocator, 10, &.{.{ .id = player.id, .bytes = null }});
+    _ = try archetype.addEntity(allocator, 11, &.{.{ .id = player.id, .bytes = null }});
+
+    try std.testing.expectEqual(11, archetype.removeEntity(allocator, removed));
+    try std.testing.expectEqual(1, archetype.entity_count);
+    try std.testing.expectEqual(11, archetype.entity_ids[removed]);
+}
+
+test "getComponentBytes: returns the bytes stored for a component" {
+    const allocator = std.testing.allocator;
+
+    const Value = struct { value: u64 };
+    const value = ComponentDescriptor.from(Value);
+
+    var archetype = Archetype.init(allocator, &.{value}, .{});
+    defer archetype.deinit(allocator);
+
+    const stored = Value{ .value = 7 };
+    _ = try archetype.addEntity(allocator, 0, &.{.{ .id = value.id, .bytes = std.mem.asBytes(&stored) }});
+
+    const bytes = archetype.getComponentBytes(0, value.id).?;
+
+    try std.testing.expectEqual(@sizeOf(Value), bytes.len);
+    try std.testing.expectEqualSlices(u8, std.mem.asBytes(&stored), bytes);
+}
+
+test "getComponentBytes: returns the bytes of the requested row" {
+    const allocator = std.testing.allocator;
+
+    const Value = struct { value: u64 };
+    const value = ComponentDescriptor.from(Value);
+
+    var archetype = Archetype.init(allocator, &.{value}, .{});
+    defer archetype.deinit(allocator);
+
+    const first = Value{ .value = 10 };
+    const second = Value{ .value = 20 };
+    _ = try archetype.addEntity(allocator, 0, &.{.{ .id = value.id, .bytes = std.mem.asBytes(&first) }});
+    const index = try archetype.addEntity(allocator, 1, &.{.{ .id = value.id, .bytes = std.mem.asBytes(&second) }});
+
+    try std.testing.expectEqualSlices(
+        u8,
+        std.mem.asBytes(&second),
+        archetype.getComponentBytes(index, value.id).?,
+    );
+}
+
+test "getComponentBytes: writes through to the stored component" {
+    const allocator = std.testing.allocator;
+
+    const Value = struct { value: u64 };
+    const value = ComponentDescriptor.from(Value);
+
+    var archetype = Archetype.init(allocator, &.{value}, .{});
+    defer archetype.deinit(allocator);
+
+    const stored = Value{ .value = 1 };
+    _ = try archetype.addEntity(allocator, 0, &.{.{ .id = value.id, .bytes = std.mem.asBytes(&stored) }});
+
+    const updated = Value{ .value = 2 };
+    @memcpy(archetype.getComponentBytes(0, value.id).?, std.mem.asBytes(&updated));
+
+    try std.testing.expectEqualSlices(
+        u8,
+        std.mem.asBytes(&updated),
+        archetype.getComponentBytes(0, value.id).?,
+    );
+}
+
+test "getComponentBytes: returns null for a component the archetype does not have" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+    const Velocity = struct { dx: f32, dy: f32 };
+
+    const position = ComponentDescriptor.from(Position);
+
+    var archetype = Archetype.init(allocator, &.{position}, .{});
+    defer archetype.deinit(allocator);
+
+    const stored = Position{ .x = 1, .y = 2 };
+    _ = try archetype.addEntity(allocator, 0, &.{.{ .id = position.id, .bytes = std.mem.asBytes(&stored) }});
+
+    try std.testing.expectEqual(null, archetype.getComponentBytes(0, ComponentDescriptor.from(Velocity).id));
+}
+
+test "getComponentBytes: returns null for a marker component" {
+    const allocator = std.testing.allocator;
+
+    const Player = struct {};
+    const player = ComponentDescriptor.from(Player);
+
+    var archetype = Archetype.init(allocator, &.{player}, .{});
+    defer archetype.deinit(allocator);
+
+    _ = try archetype.addEntity(allocator, 0, &.{.{ .id = player.id, .bytes = null }});
+
+    try std.testing.expectEqual(null, archetype.getComponentBytes(0, player.id));
+}
+
+test "hasComponent: returns true for a sized component" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+    const position = ComponentDescriptor.from(Position);
+
+    var archetype = Archetype.init(allocator, &.{position}, .{});
+    defer archetype.deinit(allocator);
+
+    try std.testing.expect(archetype.hasComponent(position.id));
+}
+
+test "hasComponent: returns true for a marker component" {
+    const allocator = std.testing.allocator;
+
+    const Player = struct {};
+    const Position = struct { x: f32, y: f32 };
+
+    const player = ComponentDescriptor.from(Player);
+
+    var archetype = Archetype.init(allocator, &.{ player, ComponentDescriptor.from(Position) }, .{});
+    defer archetype.deinit(allocator);
+
+    try std.testing.expect(archetype.hasComponent(player.id));
+}
+
+test "hasComponent: returns false for a component the archetype does not have" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+    const Velocity = struct { dx: f32, dy: f32 };
+    const Frozen = struct {};
+
+    var archetype = Archetype.init(allocator, &.{ComponentDescriptor.from(Position)}, .{});
+    defer archetype.deinit(allocator);
+
+    try std.testing.expect(!archetype.hasComponent(ComponentDescriptor.from(Velocity).id));
+    try std.testing.expect(!archetype.hasComponent(ComponentDescriptor.from(Frozen).id));
 }
