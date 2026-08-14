@@ -1,18 +1,27 @@
 const std = @import("std");
 
 pub const DeinitFunction = *const fn (std.mem.Allocator, *anyopaque) void;
+pub const DestroyFunction = *const fn (std.mem.Allocator, *anyopaque) void;
 
 pub fn getDeinitFunction(comptime T: type) DeinitFunction {
     return struct {
         fn deinitFunction(allocator: std.mem.Allocator, ptr: *anyopaque) void {
             const instance: *T = @ptrCast(@alignCast(ptr));
             deinitIfPresent(allocator, T, instance);
-            allocator.destroy(instance);
         }
     }.deinitFunction;
 }
 
-pub fn deinitIfPresent(allocator: std.mem.Allocator, comptime T: type, instance: *T) void {
+pub fn getDestroyFunction(comptime T: type) DestroyFunction {
+    return struct {
+        fn destroyFunction(allocator: std.mem.Allocator, ptr: *anyopaque) void {
+            const instance: *T = @ptrCast(@alignCast(ptr));
+            allocator.destroy(instance);
+        }
+    }.destroyFunction;
+}
+
+fn deinitIfPresent(allocator: std.mem.Allocator, comptime T: type, instance: *T) void {
     if (!std.meta.hasFn(T, "deinit")) return;
 
     const info = @typeInfo(@TypeOf(T.deinit)).@"fn";
@@ -40,7 +49,7 @@ pub fn deinitIfPresent(allocator: std.mem.Allocator, comptime T: type, instance:
     }
 }
 
-test "getDeinitFunction: calls a one argument deinit and frees the instance" {
+test "getDeinitFunction: calls a one argument deinit" {
     const Type = struct {
         allocator: std.mem.Allocator,
         owned: []u8,
@@ -52,6 +61,7 @@ test "getDeinitFunction: calls a one argument deinit and frees the instance" {
 
     const allocator = std.testing.allocator;
     const instance = try allocator.create(Type);
+    defer allocator.destroy(instance);
     instance.* = .{ .allocator = allocator, .owned = try allocator.alloc(u8, 16) };
 
     const deinit_function = getDeinitFunction(Type);
@@ -69,35 +79,39 @@ test "getDeinitFunction: hands the allocator to a two argument deinit" {
 
     const allocator = std.testing.allocator;
     const instance = try allocator.create(Type);
+    defer allocator.destroy(instance);
     instance.* = .{ .owned = try allocator.alloc(u8, 16) };
 
     const deinit_function = getDeinitFunction(Type);
     deinit_function(allocator, instance);
 }
 
-test "getDeinitFunction: frees the instance when deinit is absent" {
+test "getDeinitFunction: does nothing when deinit is absent" {
     const Type = struct {
-        owned: []u8,
+        value: u32,
     };
 
     const allocator = std.testing.allocator;
-    const owned = try allocator.alloc(u8, 16);
-    defer allocator.free(owned);
-
     const instance = try allocator.create(Type);
-    instance.* = .{ .owned = owned };
+    defer allocator.destroy(instance);
+    instance.* = .{ .value = 7 };
 
     const deinit_function = getDeinitFunction(Type);
     deinit_function(allocator, instance);
+
+    try std.testing.expectEqual(7, instance.value);
 }
 
-test "getDeinitFunction: frees a non container type" {
+test "getDeinitFunction: does nothing for a non container type" {
     const allocator = std.testing.allocator;
     const instance = try allocator.create(u32);
+    defer allocator.destroy(instance);
     instance.* = 7;
 
     const deinit_function = getDeinitFunction(u32);
     deinit_function(allocator, instance);
+
+    try std.testing.expectEqual(7, instance.*);
 }
 
 test "getDeinitFunction: calls deinit on a zero sized type" {
@@ -111,6 +125,7 @@ test "getDeinitFunction: calls deinit on a zero sized type" {
 
     const allocator = std.testing.allocator;
     const instance = try allocator.create(Type);
+    defer allocator.destroy(instance);
     instance.* = .{};
 
     const deinit_function = getDeinitFunction(Type);
@@ -118,6 +133,66 @@ test "getDeinitFunction: calls deinit on a zero sized type" {
 
     try std.testing.expectEqual(0, @sizeOf(Type));
     try std.testing.expectEqual(1, Type.count);
+}
+
+test "getDestroyFunction: frees the instance" {
+    const Type = struct {
+        value: u32,
+    };
+
+    const allocator = std.testing.allocator;
+    const instance = try allocator.create(Type);
+    instance.* = .{ .value = 7 };
+
+    const destroy_function = getDestroyFunction(Type);
+    destroy_function(allocator, instance);
+}
+
+test "getDestroyFunction: does not call deinit" {
+    const Type = struct {
+        var count: usize = 0;
+
+        value: u32,
+
+        pub fn deinit(_: *@This()) void {
+            count += 1;
+        }
+    };
+
+    const allocator = std.testing.allocator;
+    const instance = try allocator.create(Type);
+    instance.* = .{ .value = 7 };
+
+    const destroy_function = getDestroyFunction(Type);
+    destroy_function(allocator, instance);
+
+    try std.testing.expectEqual(0, Type.count);
+}
+
+test "getDestroyFunction: frees a non container type" {
+    const allocator = std.testing.allocator;
+    const instance = try allocator.create(u32);
+    instance.* = 7;
+
+    const destroy_function = getDestroyFunction(u32);
+    destroy_function(allocator, instance);
+}
+
+test "getDestroyFunction: frees an instance whose deinit already ran" {
+    const Type = struct {
+        owned: []u8,
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            allocator.free(self.owned);
+        }
+    };
+
+    const allocator = std.testing.allocator;
+    const instance = try allocator.create(Type);
+    instance.* = .{ .owned = try allocator.alloc(u8, 16) };
+
+    getDeinitFunction(Type)(allocator, instance);
+    getDestroyFunction(Type)(allocator, instance);
 }
 
 test "deinitIfPresent: runs deinit without freeing the instance" {
