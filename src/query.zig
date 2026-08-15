@@ -3,10 +3,8 @@ const std = @import("std");
 const Entity = @import("entity.zig").Entity;
 const Error = @import("error.zig").Error;
 const World = @import("world.zig").World;
-const getComponents = @import("world.zig").getComponents;
 const ComponentPointers = @import("component.zig").ComponentPointers;
 const componentId = @import("component.zig").componentId;
-const panic = @import("util.zig").panic;
 
 pub fn Query(comptime components: []const type) type {
     return struct {
@@ -17,23 +15,26 @@ pub fn Query(comptime components: []const type) type {
         }
 
         pub const Iterator = struct {
+            const component_ids = blk: {
+                var ids: [components.len]u64 = undefined;
+                for (components, 0..) |Component, index| ids[index] = componentId(Component);
+                break :blk ids;
+            };
+
             world: *World,
             archetype_cursor: usize = 0,
             entity_cursor: u32 = 0,
+            component_indices: [components.len]?usize = undefined,
 
             pub fn next(self: *Iterator) ?ComponentPointers(components) {
                 while (self.archetype_cursor < self.world.archetypes.items.len) {
                     const archetype = &self.world.archetypes.items[self.archetype_cursor];
 
                     if (self.entity_cursor == 0) {
-                        const matches = inline for (components) |Component| {
-                            if (!archetype.hasComponent(componentId(Component))) break false;
-                        } else true;
-
-                        if (!matches) {
+                        archetype.getComponentIndices(&component_ids, &self.component_indices) catch {
                             self.archetype_cursor += 1;
                             continue;
-                        }
+                        };
                     }
 
                     if (self.entity_cursor >= archetype.entity_count) {
@@ -42,9 +43,19 @@ pub fn Query(comptime components: []const type) type {
                         continue;
                     }
 
-                    const result = getComponents(archetype, self.entity_cursor, components) catch |err| {
-                        panic("Query.Iterator.next: unexpected error from getComponents: {}", .{err});
-                    };
+                    var bytes: [components.len][]u8 = undefined;
+                    archetype.getComponentsByIndices(self.entity_cursor, &self.component_indices, &bytes);
+
+                    var result: ComponentPointers(components) = undefined;
+                    inline for (components, 0..) |Component, index| {
+                        if (comptime @sizeOf(Component) == 0) {
+                            result[index] = &struct {
+                                var instance: Component = .{};
+                            }.instance;
+                        } else {
+                            result[index] = @ptrCast(@alignCast(bytes[index].ptr));
+                        }
+                    }
 
                     self.entity_cursor += 1;
                     return result;
@@ -110,6 +121,35 @@ test "iterator: yields every entity across all matching archetypes" {
 
     try std.testing.expectEqual(2, count);
     try std.testing.expectEqual(@as(f32, 3), sum_x);
+}
+
+test "iterator: resolves component columns separately for each archetype" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+    const Anchor = struct { value: u64 };
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    _ = world.addEntity(allocator, .{Position{ .x = 1, .y = 1 }});
+    _ = world.addEntity(allocator, .{ Position{ .x = 2, .y = 2 }, Anchor{ .value = 7 } });
+
+    var lone: [1]?usize = undefined;
+    var shared: [1]?usize = undefined;
+    try world.archetypes.items[0].getComponentIndices(&.{componentId(Position)}, &lone);
+    try world.archetypes.items[1].getComponentIndices(&.{componentId(Position)}, &shared);
+    try std.testing.expect(lone[0].? != shared[0].?);
+
+    var seen: [2]f32 = @splat(0);
+    var count: usize = 0;
+
+    var it = world.query(&.{Position}).iterator();
+    while (it.next()) |result| : (count += 1) seen[count] = result[0].x;
+
+    try std.testing.expectEqual(2, count);
+    try std.testing.expectEqual(@as(f32, 1), seen[0]);
+    try std.testing.expectEqual(@as(f32, 2), seen[1]);
 }
 
 test "iterator: returns null when no archetype matches" {

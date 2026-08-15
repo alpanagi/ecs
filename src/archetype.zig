@@ -7,6 +7,7 @@ const panic = @import("util.zig").panic;
 const panicOom = @import("util.zig").panicOom;
 
 const preallocated_entities_count: usize = 16;
+var no_component_bytes: [0]u8 = .{};
 
 pub const Archetype = struct {
     pub const InitOptions = struct {
@@ -101,9 +102,8 @@ pub const Archetype = struct {
         for (component_data) |component| {
             if (component.bytes) |bytes| {
                 const index = self.findComponentIndex(component.id) orelse return Error.UnknownComponent;
-                const size: usize = self.sized_components[index].size;
-                if (bytes.len != size) return Error.ComponentMismatch;
-                @memcpy(self.data[index][row * size .. (row + 1) * size], bytes);
+                if (bytes.len != self.sized_components[index].size) return Error.ComponentMismatch;
+                @memcpy(self.columnBytes(index, row), bytes);
             } else {
                 if (self.findMarkerIndex(component.id) == null) return Error.UnknownComponent;
             }
@@ -149,9 +149,56 @@ pub const Archetype = struct {
         }
 
         const index = self.findComponentIndex(component_id) orelse return null;
+        return self.columnBytes(index, entity_index);
+    }
+
+    pub fn getComponentIndices(
+        self: *const Archetype,
+        component_ids: []const u64,
+        indices: []?usize,
+    ) !void {
+        if (component_ids.len != indices.len) {
+            panic(
+                "Archetype.getComponentIndices: got {d} component ids for {d} index slots",
+                .{ component_ids.len, indices.len },
+            );
+        }
+
+        for (component_ids, indices) |component_id, *index| {
+            if (self.findComponentIndex(component_id)) |found| {
+                index.* = found;
+            } else if (self.findMarkerIndex(component_id) != null) {
+                index.* = null;
+            } else {
+                return Error.UnknownComponent;
+            }
+        }
+    }
+
+    pub fn getComponentsByIndices(
+        self: *Archetype,
+        entity_index: u32,
+        indices: []const ?usize,
+        components: [][]u8,
+    ) void {
+        if (entity_index >= self.entity_count) {
+            panic(
+                "Archetype.getComponentsByIndices: entity index {d} is out of bounds, the archetype has {d} entities",
+                .{ entity_index, self.entity_count },
+            );
+        }
+
+        if (indices.len != components.len) {
+            panic(
+                "Archetype.getComponentsByIndices: got {d} indices for {d} component slots",
+                .{ indices.len, components.len },
+            );
+        }
+
         const row: usize = entity_index;
-        const size: usize = self.sized_components[index].size;
-        return self.data[index][row * size .. (row + 1) * size];
+        for (indices, components) |index, *component| {
+            component.* = if (index) |column| self.columnBytes(column, row) else &no_component_bytes;
+        }
     }
 
     pub fn hasComponent(self: *const Archetype, component_id: u64) bool {
@@ -168,6 +215,11 @@ pub const Archetype = struct {
             buffer.* = allocator.realloc(buffer.*, new_capacity * component.size) catch
                 panicOom("Archetype.growTo");
         }
+    }
+
+    fn columnBytes(self: *Archetype, column: usize, row: usize) []u8 {
+        const size: usize = self.sized_components[column].size;
+        return self.data[column][row * size .. (row + 1) * size];
     }
 
     fn findComponentIndex(self: *const Archetype, component_id: u64) ?usize {
@@ -1035,6 +1087,237 @@ test "getComponentBytes: returns null for a marker component" {
     _ = try archetype.addEntity(allocator, 0, &.{.{ .id = player.id, .bytes = null }});
 
     try std.testing.expectEqual(null, archetype.getComponentBytes(0, player.id));
+}
+
+test "getComponentIndices: resolves the column of every requested component" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+    const Health = struct { points: u64 };
+
+    const position = ComponentDescriptor.from(Position);
+    const health = ComponentDescriptor.from(Health);
+
+    var archetype = Archetype.init(allocator, &.{ position, health }, .{});
+    defer archetype.deinit(allocator);
+
+    var indices: [2]?usize = undefined;
+    try archetype.getComponentIndices(&.{ position.id, health.id }, &indices);
+
+    try std.testing.expectEqual(position.id, archetype.sized_components[indices[0].?].id);
+    try std.testing.expectEqual(health.id, archetype.sized_components[indices[1].?].id);
+}
+
+test "getComponentIndices: follows the order the ids are requested in" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+    const Health = struct { points: u64 };
+
+    const position = ComponentDescriptor.from(Position);
+    const health = ComponentDescriptor.from(Health);
+
+    var archetype = Archetype.init(allocator, &.{ position, health }, .{});
+    defer archetype.deinit(allocator);
+
+    var forward: [2]?usize = undefined;
+    var reverse: [2]?usize = undefined;
+
+    try archetype.getComponentIndices(&.{ position.id, health.id }, &forward);
+    try archetype.getComponentIndices(&.{ health.id, position.id }, &reverse);
+
+    try std.testing.expectEqual(forward[0], reverse[1]);
+    try std.testing.expectEqual(forward[1], reverse[0]);
+}
+
+test "getComponentIndices: resolves a marker component to no column" {
+    const allocator = std.testing.allocator;
+
+    const Player = struct {};
+    const Position = struct { x: f32, y: f32 };
+
+    const player = ComponentDescriptor.from(Player);
+    const position = ComponentDescriptor.from(Position);
+
+    var archetype = Archetype.init(allocator, &.{ player, position }, .{});
+    defer archetype.deinit(allocator);
+
+    var indices: [2]?usize = undefined;
+    try archetype.getComponentIndices(&.{ player.id, position.id }, &indices);
+
+    try std.testing.expectEqual(null, indices[0]);
+    try std.testing.expectEqual(position.id, archetype.sized_components[indices[1].?].id);
+}
+
+test "getComponentIndices: returns UnknownComponent when a component is missing" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+    const Velocity = struct { dx: f32, dy: f32 };
+    const Frozen = struct {};
+
+    const position = ComponentDescriptor.from(Position);
+
+    var archetype = Archetype.init(allocator, &.{position}, .{});
+    defer archetype.deinit(allocator);
+
+    var indices: [2]?usize = undefined;
+    try std.testing.expectError(Error.UnknownComponent, archetype.getComponentIndices(
+        &.{ position.id, ComponentDescriptor.from(Velocity).id },
+        &indices,
+    ));
+    try std.testing.expectError(Error.UnknownComponent, archetype.getComponentIndices(
+        &.{ position.id, ComponentDescriptor.from(Frozen).id },
+        &indices,
+    ));
+}
+
+test "getComponentIndices: accepts an empty request" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+
+    var archetype = Archetype.init(allocator, &.{ComponentDescriptor.from(Position)}, .{});
+    defer archetype.deinit(allocator);
+
+    var indices: [0]?usize = undefined;
+    try archetype.getComponentIndices(&.{}, &indices);
+}
+
+test "getComponentIndices: stays valid after the archetype grows" {
+    const allocator = std.testing.allocator;
+
+    const Value = struct { value: u64 };
+    const value = ComponentDescriptor.from(Value);
+
+    var archetype = Archetype.init(allocator, &.{value}, .{});
+    defer archetype.deinit(allocator);
+
+    var indices: [1]?usize = undefined;
+    try archetype.getComponentIndices(&.{value.id}, &indices);
+
+    const count = preallocated_entities_count + 1;
+    for (0..count) |index| {
+        const stored = Value{ .value = @intCast(index) };
+        _ = try archetype.addEntity(allocator, @intCast(index), &.{
+            .{ .id = value.id, .bytes = std.mem.asBytes(&stored) },
+        });
+    }
+
+    var components: [1][]u8 = undefined;
+    const last: u32 = @intCast(count - 1);
+    archetype.getComponentsByIndices(last, &indices, &components);
+
+    const expected = Value{ .value = count - 1 };
+    try std.testing.expectEqualSlices(u8, std.mem.asBytes(&expected), components[0]);
+}
+
+test "getComponentsByIndices: returns the same bytes as getComponentBytes" {
+    const allocator = std.testing.allocator;
+
+    const Position = struct { x: f32, y: f32 };
+    const Health = struct { points: u64 };
+
+    const position = ComponentDescriptor.from(Position);
+    const health = ComponentDescriptor.from(Health);
+
+    var archetype = Archetype.init(allocator, &.{ position, health }, .{});
+    defer archetype.deinit(allocator);
+
+    const stored_position = Position{ .x = 1, .y = 2 };
+    const stored_health = Health{ .points = 99 };
+    _ = try archetype.addEntity(allocator, 0, &.{
+        .{ .id = position.id, .bytes = std.mem.asBytes(&stored_position) },
+        .{ .id = health.id, .bytes = std.mem.asBytes(&stored_health) },
+    });
+
+    var indices: [2]?usize = undefined;
+    try archetype.getComponentIndices(&.{ position.id, health.id }, &indices);
+
+    var components: [2][]u8 = undefined;
+    archetype.getComponentsByIndices(0, &indices, &components);
+
+    try std.testing.expectEqualSlices(u8, archetype.getComponentBytes(0, position.id).?, components[0]);
+    try std.testing.expectEqualSlices(u8, archetype.getComponentBytes(0, health.id).?, components[1]);
+}
+
+test "getComponentsByIndices: returns the bytes of the requested row" {
+    const allocator = std.testing.allocator;
+
+    const Value = struct { value: u64 };
+    const value = ComponentDescriptor.from(Value);
+
+    var archetype = Archetype.init(allocator, &.{value}, .{});
+    defer archetype.deinit(allocator);
+
+    const first = Value{ .value = 10 };
+    const second = Value{ .value = 20 };
+    _ = try archetype.addEntity(allocator, 0, &.{.{ .id = value.id, .bytes = std.mem.asBytes(&first) }});
+    const index = try archetype.addEntity(allocator, 1, &.{.{ .id = value.id, .bytes = std.mem.asBytes(&second) }});
+
+    var indices: [1]?usize = undefined;
+    try archetype.getComponentIndices(&.{value.id}, &indices);
+
+    var components: [1][]u8 = undefined;
+    archetype.getComponentsByIndices(index, &indices, &components);
+
+    try std.testing.expectEqualSlices(u8, std.mem.asBytes(&second), components[0]);
+}
+
+test "getComponentsByIndices: writes through to the stored component" {
+    const allocator = std.testing.allocator;
+
+    const Value = struct { value: u64 };
+    const value = ComponentDescriptor.from(Value);
+
+    var archetype = Archetype.init(allocator, &.{value}, .{});
+    defer archetype.deinit(allocator);
+
+    const stored = Value{ .value = 1 };
+    _ = try archetype.addEntity(allocator, 0, &.{.{ .id = value.id, .bytes = std.mem.asBytes(&stored) }});
+
+    var indices: [1]?usize = undefined;
+    try archetype.getComponentIndices(&.{value.id}, &indices);
+
+    var components: [1][]u8 = undefined;
+    archetype.getComponentsByIndices(0, &indices, &components);
+
+    const updated = Value{ .value = 2 };
+    @memcpy(components[0], std.mem.asBytes(&updated));
+
+    try std.testing.expectEqualSlices(
+        u8,
+        std.mem.asBytes(&updated),
+        archetype.getComponentBytes(0, value.id).?,
+    );
+}
+
+test "getComponentsByIndices: returns no bytes for a marker component" {
+    const allocator = std.testing.allocator;
+
+    const Player = struct {};
+    const Position = struct { x: f32, y: f32 };
+
+    const player = ComponentDescriptor.from(Player);
+    const position = ComponentDescriptor.from(Position);
+
+    var archetype = Archetype.init(allocator, &.{ player, position }, .{});
+    defer archetype.deinit(allocator);
+
+    const stored = Position{ .x = 1, .y = 2 };
+    _ = try archetype.addEntity(allocator, 0, &.{
+        .{ .id = player.id, .bytes = null },
+        .{ .id = position.id, .bytes = std.mem.asBytes(&stored) },
+    });
+
+    var indices: [2]?usize = undefined;
+    try archetype.getComponentIndices(&.{ player.id, position.id }, &indices);
+
+    var components: [2][]u8 = undefined;
+    archetype.getComponentsByIndices(0, &indices, &components);
+
+    try std.testing.expectEqual(0, components[0].len);
+    try std.testing.expectEqualSlices(u8, std.mem.asBytes(&stored), components[1]);
 }
 
 test "hasComponent: returns true for a sized component" {
