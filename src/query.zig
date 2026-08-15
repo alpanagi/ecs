@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const Column = @import("archetype.zig").Column;
 const Entity = @import("entity.zig").Entity;
 const Error = @import("error.zig").Error;
 const World = @import("world.zig").World;
@@ -24,14 +25,14 @@ pub fn Query(comptime components: []const type) type {
             world: *World,
             archetype_cursor: usize = 0,
             entity_cursor: u32 = 0,
-            component_indices: [components.len]?usize = undefined,
+            columns: [components.len]Column = undefined,
 
             pub fn next(self: *Iterator) ?ComponentPointers(components) {
                 while (self.archetype_cursor < self.world.archetypes.items.len) {
                     const archetype = &self.world.archetypes.items[self.archetype_cursor];
 
                     if (self.entity_cursor == 0) {
-                        archetype.getComponentIndices(&component_ids, &self.component_indices) catch {
+                        archetype.getComponentColumns(&component_ids, &self.columns) catch {
                             self.archetype_cursor += 1;
                             continue;
                         };
@@ -43,9 +44,7 @@ pub fn Query(comptime components: []const type) type {
                         continue;
                     }
 
-                    var bytes: [components.len][]u8 = undefined;
-                    archetype.getComponentsByIndices(self.entity_cursor, &self.component_indices, &bytes);
-
+                    const row: usize = self.entity_cursor;
                     var result: ComponentPointers(components) = undefined;
                     inline for (components, 0..) |Component, index| {
                         if (comptime @sizeOf(Component) == 0) {
@@ -53,7 +52,8 @@ pub fn Query(comptime components: []const type) type {
                                 var instance: Component = .{};
                             }.instance;
                         } else {
-                            result[index] = @ptrCast(@alignCast(bytes[index].ptr));
+                            const column = self.columns[index];
+                            result[index] = @ptrCast(@alignCast(column.bytes.ptr + row * column.stride));
                         }
                     }
 
@@ -135,11 +135,14 @@ test "iterator: resolves component columns separately for each archetype" {
     _ = world.addEntity(allocator, .{Position{ .x = 1, .y = 1 }});
     _ = world.addEntity(allocator, .{ Position{ .x = 2, .y = 2 }, Anchor{ .value = 7 } });
 
-    var lone: [1]?usize = undefined;
-    var shared: [1]?usize = undefined;
-    try world.archetypes.items[0].getComponentIndices(&.{componentId(Position)}, &lone);
-    try world.archetypes.items[1].getComponentIndices(&.{componentId(Position)}, &shared);
-    try std.testing.expect(lone[0].? != shared[0].?);
+    var lone: [1]Column = undefined;
+    var shared: [1]Column = undefined;
+    try world.archetypes.items[0].getComponentColumns(&.{componentId(Position)}, &lone);
+    try world.archetypes.items[1].getComponentColumns(&.{componentId(Position)}, &shared);
+
+    const lone_is_first = lone[0].bytes.ptr == world.archetypes.items[0].data[0].ptr;
+    const shared_is_first = shared[0].bytes.ptr == world.archetypes.items[1].data[0].ptr;
+    try std.testing.expect(lone_is_first != shared_is_first);
 
     var seen: [2]f32 = @splat(0);
     var count: usize = 0;
