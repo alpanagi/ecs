@@ -3,11 +3,19 @@ const std = @import("std");
 const util = @import("util.zig");
 const hash = @import("hash.zig").hash;
 const DeinitFunction = @import("deinit.zig").DeinitFunction;
+const DestroyFunction = @import("deinit.zig").DestroyFunction;
 const getDeinitFunction = @import("deinit.zig").getDeinitFunction;
+const getDestroyFunction = @import("deinit.zig").getDestroyFunction;
 
 const ResourceEntry = struct {
     value: *anyopaque,
     deinit: DeinitFunction,
+    destroy: DestroyFunction,
+
+    fn release(self: ResourceEntry, allocator: std.mem.Allocator) void {
+        self.deinit(allocator, self.value);
+        self.destroy(allocator, self.value);
+    }
 };
 
 pub const ResourceRegistry = struct {
@@ -18,7 +26,7 @@ pub const ResourceRegistry = struct {
     }
 
     pub fn deinit(self: *ResourceRegistry, allocator: std.mem.Allocator) void {
-        for (self.resources.values()) |entry| entry.deinit(allocator, entry.value);
+        for (self.resources.values()) |entry| entry.release(allocator);
         self.resources.deinit(allocator);
     }
 
@@ -34,8 +42,12 @@ pub const ResourceRegistry = struct {
         const gop = self.resources.getOrPut(allocator, hash(T)) catch
             util.panicOom("ResourceRegistry.addResource");
 
-        if (gop.found_existing) gop.value_ptr.deinit(allocator, gop.value_ptr.value);
-        gop.value_ptr.* = .{ .value = resource, .deinit = getDeinitFunction(T) };
+        if (gop.found_existing) gop.value_ptr.release(allocator);
+        gop.value_ptr.* = .{
+            .value = resource,
+            .deinit = getDeinitFunction(T),
+            .destroy = getDestroyFunction(T),
+        };
     }
 
     pub fn getResource(self: *const ResourceRegistry, comptime T: type) ?*T {
@@ -49,7 +61,7 @@ pub const ResourceRegistry = struct {
         comptime T: type,
     ) void {
         if (self.resources.fetchSwapRemove(hash(T))) |removed| {
-            removed.value.deinit(allocator, removed.value.value);
+            removed.value.release(allocator);
         }
     }
 };

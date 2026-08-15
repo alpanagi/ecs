@@ -96,12 +96,14 @@ pub const Archetype = struct {
         const entity_index = self.entity_count;
         if (self.entity_count == self.entity_ids.len) self.growTo(allocator, self.entity_ids.len * 2);
 
+        const row: usize = entity_index;
+
         for (component_data) |component| {
             if (component.bytes) |bytes| {
                 const index = self.findComponentIndex(component.id) orelse return Error.UnknownComponent;
-                const size = self.sized_components[index].size;
+                const size: usize = self.sized_components[index].size;
                 if (bytes.len != size) return Error.ComponentMismatch;
-                @memcpy(self.data[index][entity_index * size .. (entity_index + 1) * size], bytes);
+                @memcpy(self.data[index][row * size .. (row + 1) * size], bytes);
             } else {
                 if (self.findMarkerIndex(component.id) == null) return Error.UnknownComponent;
             }
@@ -115,8 +117,10 @@ pub const Archetype = struct {
     pub fn removeEntity(self: *Archetype, allocator: std.mem.Allocator, entity_index: u32) ?u32 {
         if (entity_index >= self.entity_count) return null;
 
+        const row: usize = entity_index;
+
         for (self.data, self.sized_components) |buffer, component| {
-            component.deinit(allocator, @ptrCast(&buffer[entity_index * component.size]));
+            component.deinit(allocator, @ptrCast(&buffer[row * component.size]));
         }
 
         const last_index = self.entity_count - 1;
@@ -124,10 +128,13 @@ pub const Archetype = struct {
 
         if (entity_index == last_index) return null;
 
+        const last_row: usize = last_index;
+
         for (self.data, self.sized_components) |buffer, component| {
+            const size: usize = component.size;
             @memcpy(
-                buffer[entity_index * component.size .. (entity_index + 1) * component.size],
-                buffer[last_index * component.size .. (last_index + 1) * component.size],
+                buffer[row * size .. (row + 1) * size],
+                buffer[last_row * size .. (last_row + 1) * size],
             );
         }
 
@@ -142,8 +149,9 @@ pub const Archetype = struct {
         }
 
         const index = self.findComponentIndex(component_id) orelse return null;
-        const size = self.sized_components[index].size;
-        return self.data[index][entity_index * size .. (entity_index + 1) * size];
+        const row: usize = entity_index;
+        const size: usize = self.sized_components[index].size;
+        return self.data[index][row * size .. (row + 1) * size];
     }
 
     pub fn hasComponent(self: *const Archetype, component_id: u64) bool {
@@ -373,6 +381,40 @@ test "deinit: ignores rows past the entity count" {
     archetype.deinit(allocator);
 
     try std.testing.expectEqual(1, Counted.calls);
+}
+
+test "deinit: frees memory owned by two different components" {
+    const allocator = std.testing.allocator;
+
+    const Owning = struct {
+        buffer: []u8,
+
+        pub fn deinit(self: *@This(), inner: std.mem.Allocator) void {
+            inner.free(self.buffer);
+        }
+    };
+    const AlsoOwning = struct {
+        name: []u8,
+        tag: u32,
+
+        pub fn deinit(self: *@This(), inner: std.mem.Allocator) void {
+            inner.free(self.name);
+        }
+    };
+
+    const owning = ComponentDescriptor.from(Owning);
+    const also_owning = ComponentDescriptor.from(AlsoOwning);
+
+    var archetype = Archetype.init(allocator, &.{ owning, also_owning }, .{});
+
+    const first = Owning{ .buffer = try allocator.alloc(u8, 8) };
+    const second = AlsoOwning{ .name = try allocator.alloc(u8, 16), .tag = 1 };
+    _ = try archetype.addEntity(allocator, 0, &.{
+        .{ .id = owning.id, .bytes = std.mem.asBytes(&first) },
+        .{ .id = also_owning.id, .bytes = std.mem.asBytes(&second) },
+    });
+
+    archetype.deinit(allocator);
 }
 
 test "addEntity: returns the index the entity was stored at" {
@@ -628,6 +670,30 @@ test "addEntity: grows the arrays when the capacity is exhausted" {
     }
 }
 
+test "addEntity: grows a marker only archetype" {
+    const allocator = std.testing.allocator;
+
+    const Player = struct {};
+    const player = ComponentDescriptor.from(Player);
+
+    var archetype = Archetype.init(allocator, &.{player}, .{});
+    defer archetype.deinit(allocator);
+
+    const count = preallocated_entities_count + 1;
+
+    for (0..count) |index| {
+        _ = try archetype.addEntity(allocator, @intCast(index), &.{.{ .id = player.id, .bytes = null }});
+    }
+
+    try std.testing.expectEqual(count, archetype.entity_count);
+    try std.testing.expect(archetype.entity_ids.len > preallocated_entities_count);
+    try std.testing.expectEqual(0, archetype.data.len);
+
+    for (0..count) |index| {
+        try std.testing.expectEqual(@as(u32, @intCast(index)), archetype.entity_ids[index]);
+    }
+}
+
 test "removeEntity: returns null when the index is out of bounds" {
     const allocator = std.testing.allocator;
 
@@ -735,6 +801,58 @@ test "removeEntity: moves only the last row when removing from the middle" {
         u8,
         std.mem.asBytes(&second),
         archetype.getComponentBytes(kept, value.id).?,
+    );
+}
+
+test "removeEntity: moves every column when removing from the middle" {
+    const allocator = std.testing.allocator;
+
+    const Small = struct { value: u32 };
+    const Large = struct { data: [16]u8 };
+
+    const small = ComponentDescriptor.from(Small);
+    const large = ComponentDescriptor.from(Large);
+
+    var archetype = Archetype.init(allocator, &.{ small, large }, .{});
+    defer archetype.deinit(allocator);
+
+    const smalls = [_]Small{ .{ .value = 10 }, .{ .value = 20 }, .{ .value = 30 } };
+    const larges = [_]Large{
+        .{ .data = @splat(1) },
+        .{ .data = @splat(2) },
+        .{ .data = @splat(3) },
+    };
+
+    var rows: [3]u32 = undefined;
+    for (0..3) |index| {
+        rows[index] = try archetype.addEntity(allocator, @intCast(index), &.{
+            .{ .id = small.id, .bytes = std.mem.asBytes(&smalls[index]) },
+            .{ .id = large.id, .bytes = std.mem.asBytes(&larges[index]) },
+        });
+    }
+
+    try std.testing.expectEqual(2, archetype.removeEntity(allocator, rows[0]));
+
+    try std.testing.expectEqualSlices(
+        u8,
+        std.mem.asBytes(&smalls[2]),
+        archetype.getComponentBytes(rows[0], small.id).?,
+    );
+    try std.testing.expectEqualSlices(
+        u8,
+        std.mem.asBytes(&larges[2]),
+        archetype.getComponentBytes(rows[0], large.id).?,
+    );
+
+    try std.testing.expectEqualSlices(
+        u8,
+        std.mem.asBytes(&smalls[1]),
+        archetype.getComponentBytes(rows[1], small.id).?,
+    );
+    try std.testing.expectEqualSlices(
+        u8,
+        std.mem.asBytes(&larges[1]),
+        archetype.getComponentBytes(rows[1], large.id).?,
     );
 }
 

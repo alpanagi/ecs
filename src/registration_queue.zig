@@ -1,19 +1,21 @@
 const std = @import("std");
 
 const SystemRegistry = @import("system_registry.zig").SystemRegistry;
-const SystemEntry = @import("system_registry.zig").SystemEntry;
-const ObserverEntry = @import("system_registry.zig").ObserverEntry;
+const SystemEntry = @import("system_entry.zig").SystemEntry;
+const ObserverEntry = @import("system_entry.zig").ObserverEntry;
+const EventId = @import("event.zig").EventId;
+const World = @import("world.zig").World;
+const component = @import("lifecycle.zig").component;
+const panicOom = @import("util.zig").panicOom;
 
 const RegistrationCommand = union(enum) {
     add_system: struct {
         group: u64,
         entry: SystemEntry,
     },
-    add_one_shot_system: struct {
-        entry: SystemEntry,
-    },
+    add_one_shot_system: SystemEntry,
     add_observer: struct {
-        event: u64,
+        event_id: EventId,
         entry: ObserverEntry,
     },
 };
@@ -34,54 +36,71 @@ pub const RegistrationQueue = struct {
         allocator: std.mem.Allocator,
         group: u64,
         entry: SystemEntry,
-    ) !void {
-        try self.commands.pushBack(allocator, .{ .add_system = .{
+    ) void {
+        self.commands.pushBack(allocator, .{ .add_system = .{
             .group = group,
             .entry = entry,
-        } });
+        } }) catch panicOom("RegistrationQueue.addSystem");
     }
 
     pub fn addOneShotSystem(
         self: *RegistrationQueue,
         allocator: std.mem.Allocator,
         entry: SystemEntry,
-    ) !void {
-        try self.commands.pushBack(allocator, .{ .add_one_shot_system = .{ .entry = entry } });
+    ) void {
+        self.commands.pushBack(allocator, .{ .add_one_shot_system = entry }) catch
+            panicOom("RegistrationQueue.addOneShotSystem");
     }
 
     pub fn addObserver(
         self: *RegistrationQueue,
         allocator: std.mem.Allocator,
-        event: u64,
+        event_id: EventId,
         entry: ObserverEntry,
-    ) !void {
-        try self.commands.pushBack(allocator, .{ .add_observer = .{
-            .event = event,
+    ) void {
+        self.commands.pushBack(allocator, .{ .add_observer = .{
+            .event_id = event_id,
             .entry = entry,
-        } });
+        } }) catch panicOom("RegistrationQueue.addObserver");
     }
 
     pub fn flush(
         self: *RegistrationQueue,
         allocator: std.mem.Allocator,
         registry: *SystemRegistry,
-    ) !void {
+    ) void {
         while (self.commands.popFront()) |command| {
             switch (command) {
-                .add_system => |add| try registry.addSystemEntry(allocator, add.group, add.entry),
-                .add_one_shot_system => |add| try registry.addOneShotSystemEntry(allocator, add.entry),
-                .add_observer => |add| try registry.addObserverEntry(allocator, add.event, add.entry),
+                .add_system => |add| registry.addSystemEntry(allocator, add.group, add.entry),
+                .add_one_shot_system => |entry| registry.addOneShotSystemEntry(allocator, entry),
+                .add_observer => |add| registry.addObserverEntry(allocator, add.event_id, add.entry),
             }
         }
     }
 };
 
-test "RegistrationQueue.addSystem defers registration until flush" {
+test "deinit: discards unflushed commands without applying them" {
     const allocator = std.testing.allocator;
-    const World = @import("world.zig").World;
 
     const entry: SystemEntry = .{ .function = struct {
-        fn call(_: *World, _: std.mem.Allocator) anyerror!void {}
+        fn call(_: *World, _: std.mem.Allocator) void {}
+    }.call };
+
+    var registry = SystemRegistry.init();
+    defer registry.deinit(allocator);
+
+    var queue = RegistrationQueue.init();
+    queue.addSystem(allocator, 1, entry);
+    queue.deinit(allocator);
+
+    try std.testing.expectEqual(0, registry.groups.count());
+}
+
+test "addSystem: defers registration until flush" {
+    const allocator = std.testing.allocator;
+
+    const entry: SystemEntry = .{ .function = struct {
+        fn call(_: *World, _: std.mem.Allocator) void {}
     }.call };
 
     var registry = SystemRegistry.init();
@@ -90,21 +109,20 @@ test "RegistrationQueue.addSystem defers registration until flush" {
     var queue = RegistrationQueue.init();
     defer queue.deinit(allocator);
 
-    try queue.addSystem(allocator, 1, entry);
+    queue.addSystem(allocator, 1, entry);
     try std.testing.expectEqual(0, registry.groups.count());
 
-    try queue.flush(allocator, &registry);
+    queue.flush(allocator, &registry);
 
     try std.testing.expectEqual(1, registry.groups.count());
     try std.testing.expectEqual(1, registry.groups.get(1).?.items.len);
 }
 
-test "RegistrationQueue.addOneShotSystem defers registration until flush" {
+test "addOneShotSystem: defers registration until flush" {
     const allocator = std.testing.allocator;
-    const World = @import("world.zig").World;
 
     const entry: SystemEntry = .{ .function = struct {
-        fn call(_: *World, _: std.mem.Allocator) anyerror!void {}
+        fn call(_: *World, _: std.mem.Allocator) void {}
     }.call };
 
     var registry = SystemRegistry.init();
@@ -113,22 +131,20 @@ test "RegistrationQueue.addOneShotSystem defers registration until flush" {
     var queue = RegistrationQueue.init();
     defer queue.deinit(allocator);
 
-    try queue.addOneShotSystem(allocator, entry);
+    queue.addOneShotSystem(allocator, entry);
     try std.testing.expectEqual(0, registry.one_shot_systems.items.len);
 
-    try queue.flush(allocator, &registry);
+    queue.flush(allocator, &registry);
 
     try std.testing.expectEqual(1, registry.one_shot_systems.items.len);
 }
 
-test "RegistrationQueue.addObserver defers registration until flush" {
+test "addObserver: defers registration until flush" {
     const allocator = std.testing.allocator;
-    const World = @import("world.zig").World;
-    const hash = @import("hash.zig").hash;
 
     const Damage = struct { amount: u32 };
     const entry: ObserverEntry = .{ .function = struct {
-        fn call(_: *World, _: std.mem.Allocator, _: *const anyopaque) anyerror!void {}
+        fn call(_: *World, _: std.mem.Allocator, _: *const anyopaque) void {}
     }.call };
 
     var registry = SystemRegistry.init();
@@ -137,20 +153,29 @@ test "RegistrationQueue.addObserver defers registration until flush" {
     var queue = RegistrationQueue.init();
     defer queue.deinit(allocator);
 
-    try queue.addObserver(allocator, hash(Damage), entry);
+    const Position = struct { x: f32, y: f32 };
+
+    queue.addObserver(allocator, EventId.from(Damage), entry);
+    queue.addObserver(allocator, component.added(Position), entry);
     try std.testing.expectEqual(0, registry.observers.count());
 
-    try queue.flush(allocator, &registry);
+    queue.flush(allocator, &registry);
 
-    try std.testing.expectEqual(1, registry.observers.get(hash(Damage)).?.items.len);
+    try std.testing.expectEqual(2, registry.observers.count());
+    try std.testing.expectEqual(1, registry.observers.get(EventId.from(Damage)).?.items.len);
+    try std.testing.expectEqual(1, registry.observers.get(component.added(Position)).?.items.len);
 }
 
-test "RegistrationQueue.flush applies commands in the order they were enqueued" {
+test "flush: applies every kind of queued command" {
     const allocator = std.testing.allocator;
-    const World = @import("world.zig").World;
 
-    const entry: SystemEntry = .{ .function = struct {
-        fn call(_: *World, _: std.mem.Allocator) anyerror!void {}
+    const Damage = struct { amount: u32 };
+
+    const system: SystemEntry = .{ .function = struct {
+        fn call(_: *World, _: std.mem.Allocator) void {}
+    }.call };
+    const observer: ObserverEntry = .{ .function = struct {
+        fn call(_: *World, _: std.mem.Allocator, _: *const anyopaque) void {}
     }.call };
 
     var registry = SystemRegistry.init();
@@ -159,22 +184,22 @@ test "RegistrationQueue.flush applies commands in the order they were enqueued" 
     var queue = RegistrationQueue.init();
     defer queue.deinit(allocator);
 
-    try queue.addSystem(allocator, 2, entry);
-    try queue.addSystem(allocator, 1, entry);
-    try queue.addSystem(allocator, 2, entry);
+    queue.addSystem(allocator, 1, system);
+    queue.addObserver(allocator, EventId.from(Damage), observer);
+    queue.addOneShotSystem(allocator, system);
 
-    try queue.flush(allocator, &registry);
+    queue.flush(allocator, &registry);
 
-    try std.testing.expectEqualSlices(u64, &.{ 2, 1 }, registry.groups.keys());
-    try std.testing.expectEqual(2, registry.groups.get(2).?.items.len);
+    try std.testing.expectEqual(1, registry.groups.get(1).?.items.len);
+    try std.testing.expectEqual(1, registry.observers.get(EventId.from(Damage)).?.items.len);
+    try std.testing.expectEqual(1, registry.one_shot_systems.items.len);
 }
 
-test "RegistrationQueue.flush leaves the queue empty" {
+test "flush: leaves the queue empty" {
     const allocator = std.testing.allocator;
-    const World = @import("world.zig").World;
 
     const entry: SystemEntry = .{ .function = struct {
-        fn call(_: *World, _: std.mem.Allocator) anyerror!void {}
+        fn call(_: *World, _: std.mem.Allocator) void {}
     }.call };
 
     var registry = SystemRegistry.init();
@@ -183,27 +208,9 @@ test "RegistrationQueue.flush leaves the queue empty" {
     var queue = RegistrationQueue.init();
     defer queue.deinit(allocator);
 
-    try queue.addSystem(allocator, 1, entry);
-    try queue.addOneShotSystem(allocator, entry);
-    try queue.flush(allocator, &registry);
+    queue.addSystem(allocator, 1, entry);
+    queue.addOneShotSystem(allocator, entry);
+    queue.flush(allocator, &registry);
 
     try std.testing.expectEqual(0, queue.commands.len);
-}
-
-test "RegistrationQueue.deinit discards unflushed commands without applying them" {
-    const allocator = std.testing.allocator;
-    const World = @import("world.zig").World;
-
-    const entry: SystemEntry = .{ .function = struct {
-        fn call(_: *World, _: std.mem.Allocator) anyerror!void {}
-    }.call };
-
-    var registry = SystemRegistry.init();
-    defer registry.deinit(allocator);
-
-    var queue = RegistrationQueue.init();
-    try queue.addSystem(allocator, 1, entry);
-    queue.deinit(allocator);
-
-    try std.testing.expectEqual(0, registry.groups.count());
 }

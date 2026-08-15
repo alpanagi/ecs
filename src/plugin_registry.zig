@@ -3,13 +3,16 @@ const std = @import("std");
 const util = @import("util.zig");
 const World = @import("world.zig").World;
 const DeinitFunction = @import("deinit.zig").DeinitFunction;
+const DestroyFunction = @import("deinit.zig").DestroyFunction;
 const getDeinitFunction = @import("deinit.zig").getDeinitFunction;
+const getDestroyFunction = @import("deinit.zig").getDestroyFunction;
 const resolveParameter = @import("parameter.zig").resolveParameter;
-const Resource = @import("world.zig").Resource;
+const Resource = @import("resource.zig").Resource;
 
 const PluginEntry = struct {
     plugin: *anyopaque,
     deinit: DeinitFunction,
+    destroy: DestroyFunction,
 };
 
 pub const PluginRegistry = struct {
@@ -21,7 +24,10 @@ pub const PluginRegistry = struct {
 
     pub fn deinit(self: *PluginRegistry, allocator: std.mem.Allocator) void {
         var entries = std.mem.reverseIterator(self.plugins.items);
-        while (entries.next()) |entry| entry.deinit(allocator, entry.plugin);
+        while (entries.next()) |entry| {
+            entry.deinit(allocator, entry.plugin);
+            entry.destroy(allocator, entry.plugin);
+        }
         self.plugins.deinit(allocator);
     }
 
@@ -72,6 +78,7 @@ pub const PluginRegistry = struct {
         self.plugins.append(allocator, .{
             .plugin = plugin,
             .deinit = getDeinitFunction(T),
+            .destroy = getDestroyFunction(T),
         }) catch util.panicOom("PluginRegistry.addPlugin");
 
         var arguments: std.meta.ArgsTuple(@TypeOf(T.build)) = undefined;
@@ -284,7 +291,7 @@ test "addPlugin: resolves a resource parameter for build" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    try world.addResource(allocator, Config, .{ .scale = 2.5 });
+    world.addResource(allocator, Config, .{ .scale = 2.5 });
 
     var registry = PluginRegistry.init();
     defer registry.deinit(allocator);
