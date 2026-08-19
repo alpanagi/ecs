@@ -25,7 +25,7 @@ test "fromWorld: points at the resource stored in the world" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    world.addResourceOwned(allocator, ClearColor, .{ .r = 0.5, .g = 0, .b = 0 });
+    world.addOwnedResource(allocator, ClearColor, .{ .r = 0.5, .g = 0, .b = 0 });
 
     const color = Resource(ClearColor).fromWorld(allocator, &world);
 
@@ -41,7 +41,7 @@ test "fromWorld: writes through to the stored resource" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    world.addResourceOwned(allocator, Counter, .{ .hits = 0 });
+    world.addOwnedResource(allocator, Counter, .{ .hits = 0 });
 
     const counter = Resource(Counter).fromWorld(allocator, &world);
     counter.value.hits += 1;
@@ -57,8 +57,8 @@ test "fromWorld: sees a resource replaced after it was read" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    world.addResourceOwned(allocator, Config, .{ .scale = 1 });
-    world.addResourceOwned(allocator, Config, .{ .scale = 2 });
+    world.addOwnedResource(allocator, Config, .{ .scale = 1 });
+    world.addOwnedResource(allocator, Config, .{ .scale = 2 });
 
     const config = Resource(Config).fromWorld(allocator, &world);
 

@@ -286,7 +286,7 @@ test "addPlugin: resolves a resource parameter for build" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    world.addResourceOwned(allocator, Config, .{ .scale = 2.5 });
+    world.addOwnedResource(allocator, Config, .{ .scale = 2.5 });
 
     var registry = PluginRegistry.init();
     defer registry.deinit(allocator);

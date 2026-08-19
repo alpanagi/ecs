@@ -33,7 +33,7 @@ pub const Commands = struct {
         self.world.command_queue.despawn(self.allocator, entity, World.removeEntity);
     }
 
-    pub fn addResourceOwned(self: Commands, comptime T: type, value: T) void {
+    pub fn addOwnedResource(self: Commands, comptime T: type, value: T) void {
         self.world.command_queue.addResource(self.allocator, value, addResourceFunctions(T));
     }
 
@@ -84,7 +84,7 @@ fn spawnFunctions(comptime Components: type) ValueFunctions {
         .apply = struct {
             fn call(data: *anyopaque, world: *World, allocator: std.mem.Allocator) void {
                 const typed: *Components = @ptrCast(@alignCast(data));
-                _ = world.addEntityOwned(allocator, typed.*);
+                _ = world.addOwnedEntity(allocator, typed.*);
             }
         }.call,
         .deinit = struct {
@@ -104,7 +104,7 @@ fn addResourceFunctions(comptime T: type) ValueFunctions {
         .apply = struct {
             fn call(data: *anyopaque, world: *World, allocator: std.mem.Allocator) void {
                 const typed: *T = @ptrCast(@alignCast(data));
-                world.addResourceOwned(allocator, T, typed.*);
+                world.addOwnedResource(allocator, T, typed.*);
             }
         }.call,
         .deinit = getDeinitFunction(T),
@@ -178,7 +178,7 @@ test "despawn: defers entity removal until the queue is flushed" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    const entity = world.addEntityOwned(allocator, .{Value{ .value = 1 }});
+    const entity = world.addOwnedEntity(allocator, .{Value{ .value = 1 }});
 
     const commands = Commands.fromWorld(allocator, &world);
 
@@ -190,7 +190,7 @@ test "despawn: defers entity removal until the queue is flushed" {
     try std.testing.expectEqual(1, world.entity_free_list.items.len);
 }
 
-test "addResourceOwned: runs the resource's deinit when the queue is dropped unflushed" {
+test "addOwnedResource: runs the resource's deinit when the queue is dropped unflushed" {
     const allocator = std.testing.allocator;
 
     const Owning = struct {
@@ -204,10 +204,10 @@ test "addResourceOwned: runs the resource's deinit when the queue is dropped unf
     var world = World.init();
     defer world.deinit(allocator);
 
-    Commands.fromWorld(allocator, &world).addResourceOwned(Owning, .{ .buffer = try allocator.alloc(u8, 16) });
+    Commands.fromWorld(allocator, &world).addOwnedResource(Owning, .{ .buffer = try allocator.alloc(u8, 16) });
 }
 
-test "addResourceOwned: defers registration until the queue is flushed" {
+test "addOwnedResource: defers registration until the queue is flushed" {
     const allocator = std.testing.allocator;
 
     const Config = struct { scale: f32 };
@@ -215,7 +215,7 @@ test "addResourceOwned: defers registration until the queue is flushed" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    Commands.fromWorld(allocator, &world).addResourceOwned(Config, .{ .scale = 2 });
+    Commands.fromWorld(allocator, &world).addOwnedResource(Config, .{ .scale = 2 });
     try std.testing.expectEqual(null, world.getResource(Config));
 
     world.command_queue.flush(allocator, &world);
@@ -240,7 +240,7 @@ test "removeResource: defers removal until the queue is flushed" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    world.addResourceOwned(allocator, Tracked, .{});
+    world.addOwnedResource(allocator, Tracked, .{});
 
     Commands.fromWorld(allocator, &world).removeResource(Tracked);
     try std.testing.expectEqual(0, State.deinits);
