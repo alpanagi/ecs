@@ -35,24 +35,16 @@ pub const PluginRegistry = struct {
         self: *PluginRegistry,
         allocator: std.mem.Allocator,
         world: *World,
-        comptime T: type,
+        plugin: anytype,
     ) void {
+        const T = @TypeOf(plugin);
         const name = @typeName(T);
-        const init_error_message = name ++ ".init has an unsupported signature, expected fn () " ++
-            name ++ " or fn (std.mem.Allocator) " ++ name;
         const build_error_message = name ++ ".build must take *" ++ name ++
             " as its first parameter and return void";
 
         comptime {
-            if (std.meta.hasFn(T, "init")) {
-                const init_info = @typeInfo(@TypeOf(T.init)).@"fn";
-                if (init_info.return_type != T) @compileError(init_error_message);
-                if (init_info.params.len > 1) @compileError(init_error_message);
-
-                if (init_info.params.len == 1) {
-                    const Allocator = init_info.params[0].type orelse @compileError(init_error_message);
-                    if (Allocator != std.mem.Allocator) @compileError(init_error_message);
-                }
+            if (@typeInfo(T) != .@"struct") {
+                @compileError("a plugin must be a struct value, got " ++ name);
             }
 
             if (!std.meta.hasFn(T, "build")) @compileError(name ++ " must declare build");
@@ -63,20 +55,11 @@ pub const PluginRegistry = struct {
             if (build_info.return_type != void) @compileError(build_error_message);
         }
 
-        const plugin = allocator.create(T) catch util.panicOom("PluginRegistry.addPlugin");
-
-        if (std.meta.hasFn(T, "init")) {
-            plugin.* = switch (@typeInfo(@TypeOf(T.init)).@"fn".params.len) {
-                0 => T.init(),
-                1 => T.init(allocator),
-                else => unreachable,
-            };
-        } else {
-            plugin.* = .{};
-        }
+        const stored = allocator.create(T) catch util.panicOom("PluginRegistry.addPlugin");
+        stored.* = plugin;
 
         self.plugins.append(allocator, .{
-            .plugin = plugin,
+            .plugin = stored,
             .deinit = getDeinitFunction(T),
             .destroy = getDestroyFunction(T),
         }) catch util.panicOom("PluginRegistry.addPlugin");
@@ -84,7 +67,7 @@ pub const PluginRegistry = struct {
         var arguments: std.meta.ArgsTuple(@TypeOf(T.build)) = undefined;
         inline for (&arguments, 0..) |*argument, index| {
             if (comptime index == 0) {
-                argument.* = plugin;
+                argument.* = stored;
             } else {
                 argument.* = resolveParameter(allocator, world, @TypeOf(argument.*));
             }
@@ -94,27 +77,27 @@ pub const PluginRegistry = struct {
     }
 };
 
-test "deinit: frees a plugin that allocated in init" {
+test "deinit: calls a plugin deinit that takes an allocator" {
+    const allocator = std.testing.allocator;
+
     const Plugin = struct {
         buffer: []u8,
 
-        pub fn init(allocator: std.mem.Allocator) @This() {
-            return .{ .buffer = allocator.alloc(u8, 8) catch util.panicOom("Plugin.init") };
-        }
-
         pub fn build(_: *@This(), _: std.mem.Allocator) void {}
 
-        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
-            allocator.free(self.buffer);
+        pub fn deinit(self: *@This(), inner: std.mem.Allocator) void {
+            inner.free(self.buffer);
         }
     };
 
     var world = World.init();
-    defer world.deinit(std.testing.allocator);
+    defer world.deinit(allocator);
 
     var registry = PluginRegistry.init();
-    registry.addPlugin(std.testing.allocator, &world, Plugin);
-    registry.deinit(std.testing.allocator);
+    registry.addPlugin(allocator, &world, Plugin{
+        .buffer = allocator.alloc(u8, 8) catch util.panicOom("test"),
+    });
+    registry.deinit(allocator);
 }
 
 test "deinit: destroys plugins in reverse registration order" {
@@ -146,8 +129,8 @@ test "deinit: destroys plugins in reverse registration order" {
     defer world.deinit(std.testing.allocator);
 
     var registry = PluginRegistry.init();
-    registry.addPlugin(std.testing.allocator, &world, First);
-    registry.addPlugin(std.testing.allocator, &world, Second);
+    registry.addPlugin(std.testing.allocator, &world, First{});
+    registry.addPlugin(std.testing.allocator, &world, Second{});
     registry.deinit(std.testing.allocator);
 
     try std.testing.expectEqualSlices(u8, "ba", &State.order);
@@ -170,21 +153,32 @@ test "deinit: calls a plugin deinit that takes no allocator" {
 
     var registry = PluginRegistry.init();
 
-    registry.addPlugin(std.testing.allocator, &world, Plugin);
+    registry.addPlugin(std.testing.allocator, &world, Plugin{});
     registry.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(1, State.count);
 }
 
-test "addPlugin: runs an init taking no allocator and stores the plugin" {
-    const State = struct {
-        var initialized: bool = false;
-    };
+test "addPlugin: stores the plugin the caller passed" {
     const Plugin = struct {
-        pub fn init() @This() {
-            State.initialized = true;
-            return .{};
-        }
+        pub fn build(_: *@This(), _: std.mem.Allocator) void {}
+    };
+
+    var world = World.init();
+    defer world.deinit(std.testing.allocator);
+
+    var registry = PluginRegistry.init();
+    defer registry.deinit(std.testing.allocator);
+
+    registry.addPlugin(std.testing.allocator, &world, Plugin{});
+
+    try std.testing.expectEqual(1, registry.plugins.items.len);
+}
+
+test "addPlugin: keeps the field values the caller set" {
+    const Plugin = struct {
+        scale: f32 = 1,
+        label: []const u8 = "default",
 
         pub fn build(_: *@This(), _: std.mem.Allocator) void {}
     };
@@ -195,13 +189,14 @@ test "addPlugin: runs an init taking no allocator and stores the plugin" {
     var registry = PluginRegistry.init();
     defer registry.deinit(std.testing.allocator);
 
-    registry.addPlugin(std.testing.allocator, &world, Plugin);
+    registry.addPlugin(std.testing.allocator, &world, Plugin{ .scale = 2.5, .label = "configured" });
 
-    try std.testing.expect(State.initialized);
-    try std.testing.expectEqual(1, registry.plugins.items.len);
+    const stored: *Plugin = @ptrCast(@alignCast(registry.plugins.items[0].plugin));
+    try std.testing.expectEqual(@as(f32, 2.5), stored.scale);
+    try std.testing.expectEqualStrings("configured", stored.label);
 }
 
-test "addPlugin: runs an init taking an allocator" {
+test "addPlugin: keeps a value the caller built with an allocator" {
     const Plugin = struct {
         ready: bool,
 
@@ -218,7 +213,7 @@ test "addPlugin: runs an init taking an allocator" {
     var registry = PluginRegistry.init();
     defer registry.deinit(std.testing.allocator);
 
-    registry.addPlugin(std.testing.allocator, &world, Plugin);
+    registry.addPlugin(std.testing.allocator, &world, Plugin.init(std.testing.allocator));
 
     const stored: *Plugin = @ptrCast(@alignCast(registry.plugins.items[0].plugin));
     try std.testing.expect(stored.ready);
@@ -242,12 +237,12 @@ test "addPlugin: calls a build that takes only the plugin" {
     var registry = PluginRegistry.init();
     defer registry.deinit(std.testing.allocator);
 
-    registry.addPlugin(std.testing.allocator, &world, Plugin);
+    registry.addPlugin(std.testing.allocator, &world, Plugin{});
 
     try std.testing.expect(State.built);
 }
 
-test "addPlugin: passes only the parameters build declares" {
+test "addPlugin: resolves a query parameter for build" {
     const Query = @import("world.zig").Query;
 
     const State = struct {
@@ -269,7 +264,7 @@ test "addPlugin: passes only the parameters build declares" {
     var registry = PluginRegistry.init();
     defer registry.deinit(std.testing.allocator);
 
-    registry.addPlugin(std.testing.allocator, &world, Plugin);
+    registry.addPlugin(std.testing.allocator, &world, Plugin{});
 
     try std.testing.expect(State.ran);
 }
@@ -291,17 +286,40 @@ test "addPlugin: resolves a resource parameter for build" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    world.addResource(allocator, Config, .{ .scale = 2.5 });
+    world.addResourceOwned(allocator, Config, .{ .scale = 2.5 });
 
     var registry = PluginRegistry.init();
     defer registry.deinit(allocator);
 
-    registry.addPlugin(allocator, &world, Plugin);
+    registry.addPlugin(allocator, &world, Plugin{});
 
     try std.testing.expectEqual(@as(f32, 2.5), State.scale);
 }
 
-test "addPlugin: passes the initialized plugin to build" {
+test "addPlugin: passes the caller's plugin value to build" {
+    const State = struct {
+        var seen_scale: f32 = 0;
+    };
+    const Plugin = struct {
+        scale: f32,
+
+        pub fn build(self: *@This(), _: std.mem.Allocator) void {
+            State.seen_scale = self.scale;
+        }
+    };
+
+    var world = World.init();
+    defer world.deinit(std.testing.allocator);
+
+    var registry = PluginRegistry.init();
+    defer registry.deinit(std.testing.allocator);
+
+    registry.addPlugin(std.testing.allocator, &world, Plugin{ .scale = 2.5 });
+
+    try std.testing.expectEqual(@as(f32, 2.5), State.seen_scale);
+}
+
+test "addPlugin: resolves a parameter declaring fromWorld for build" {
     const WorldRef = struct {
         world: *World,
 
@@ -312,17 +330,9 @@ test "addPlugin: passes the initialized plugin to build" {
 
     const State = struct {
         var seen: ?*World = null;
-        var seen_initialized: bool = false;
     };
     const Plugin = struct {
-        initialized: bool,
-
-        pub fn init(_: std.mem.Allocator) @This() {
-            return .{ .initialized = true };
-        }
-
-        pub fn build(self: *@This(), world: WorldRef) void {
-            State.seen_initialized = self.initialized;
+        pub fn build(_: *@This(), world: WorldRef) void {
             State.seen = world.world;
         }
     };
@@ -333,9 +343,8 @@ test "addPlugin: passes the initialized plugin to build" {
     var registry = PluginRegistry.init();
     defer registry.deinit(std.testing.allocator);
 
-    registry.addPlugin(std.testing.allocator, &world, Plugin);
+    registry.addPlugin(std.testing.allocator, &world, Plugin{});
 
-    try std.testing.expect(State.seen_initialized);
     try std.testing.expectEqual(&world, State.seen.?);
 }
 
@@ -350,22 +359,21 @@ test "addPlugin: stores a plugin that declares no deinit" {
     var registry = PluginRegistry.init();
     defer registry.deinit(std.testing.allocator);
 
-    registry.addPlugin(std.testing.allocator, &world, Plugin);
+    registry.addPlugin(std.testing.allocator, &world, Plugin{});
 
     try std.testing.expectEqual(1, registry.plugins.items.len);
 }
 
 test "addPlugin: adds the same plugin type more than once" {
     const State = struct {
-        var init_count: usize = 0;
+        var build_count: usize = 0;
     };
     const Plugin = struct {
-        pub fn init(_: std.mem.Allocator) @This() {
-            State.init_count += 1;
-            return .{};
-        }
+        tag: u8,
 
-        pub fn build(_: *@This(), _: std.mem.Allocator) void {}
+        pub fn build(_: *@This(), _: std.mem.Allocator) void {
+            State.build_count += 1;
+        }
     };
 
     var world = World.init();
@@ -374,9 +382,14 @@ test "addPlugin: adds the same plugin type more than once" {
     var registry = PluginRegistry.init();
     defer registry.deinit(std.testing.allocator);
 
-    registry.addPlugin(std.testing.allocator, &world, Plugin);
-    registry.addPlugin(std.testing.allocator, &world, Plugin);
+    registry.addPlugin(std.testing.allocator, &world, Plugin{ .tag = 'a' });
+    registry.addPlugin(std.testing.allocator, &world, Plugin{ .tag = 'b' });
 
-    try std.testing.expectEqual(2, State.init_count);
+    try std.testing.expectEqual(2, State.build_count);
     try std.testing.expectEqual(2, registry.plugins.items.len);
+
+    const first: *Plugin = @ptrCast(@alignCast(registry.plugins.items[0].plugin));
+    const second: *Plugin = @ptrCast(@alignCast(registry.plugins.items[1].plugin));
+    try std.testing.expectEqual(@as(u8, 'a'), first.tag);
+    try std.testing.expectEqual(@as(u8, 'b'), second.tag);
 }

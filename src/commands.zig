@@ -22,7 +22,7 @@ pub const Commands = struct {
         return .{ .world = world, .allocator = allocator };
     }
 
-    pub fn spawn(self: Commands, components: anytype) void {
+    pub fn spawnOwned(self: Commands, components: anytype) void {
         const Values = @Tuple(componentTypes(@TypeOf(components)));
         const values: Values = components;
 
@@ -33,7 +33,7 @@ pub const Commands = struct {
         self.world.command_queue.despawn(self.allocator, entity, World.removeEntity);
     }
 
-    pub fn addResource(self: Commands, comptime T: type, value: T) void {
+    pub fn addResourceOwned(self: Commands, comptime T: type, value: T) void {
         self.world.command_queue.addResource(self.allocator, value, addResourceFunctions(T));
     }
 
@@ -84,7 +84,7 @@ fn spawnFunctions(comptime Components: type) ValueFunctions {
         .apply = struct {
             fn call(data: *anyopaque, world: *World, allocator: std.mem.Allocator) void {
                 const typed: *Components = @ptrCast(@alignCast(data));
-                _ = world.addEntity(allocator, typed.*);
+                _ = world.addEntityOwned(allocator, typed.*);
             }
         }.call,
         .deinit = struct {
@@ -104,7 +104,7 @@ fn addResourceFunctions(comptime T: type) ValueFunctions {
         .apply = struct {
             fn call(data: *anyopaque, world: *World, allocator: std.mem.Allocator) void {
                 const typed: *T = @ptrCast(@alignCast(data));
-                world.addResource(allocator, T, typed.*);
+                world.addResourceOwned(allocator, T, typed.*);
             }
         }.call,
         .deinit = getDeinitFunction(T),
@@ -120,7 +120,7 @@ fn removeResourceFunction(comptime T: type) RemoveResourceFunction {
     }.call;
 }
 
-test "spawn: accepts a tuple of only marker components" {
+test "spawnOwned: accepts a tuple of only marker components" {
     const allocator = std.testing.allocator;
 
     const Player = struct {};
@@ -128,14 +128,14 @@ test "spawn: accepts a tuple of only marker components" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    Commands.fromWorld(allocator, &world).spawn(.{Player{}});
+    Commands.fromWorld(allocator, &world).spawnOwned(.{Player{}});
     world.command_queue.flush(allocator, &world);
 
     try std.testing.expectEqual(1, world.entity_descriptors.items.len);
     try std.testing.expectEqual(1, world.archetypes.items[0].entity_count);
 }
 
-test "spawn: runs the components' deinit when the queue is dropped unflushed" {
+test "spawnOwned: runs the components' deinit when the queue is dropped unflushed" {
     const allocator = std.testing.allocator;
 
     const Owning = struct {
@@ -149,10 +149,10 @@ test "spawn: runs the components' deinit when the queue is dropped unflushed" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    Commands.fromWorld(allocator, &world).spawn(.{Owning{ .buffer = try allocator.alloc(u8, 8) }});
+    Commands.fromWorld(allocator, &world).spawnOwned(.{Owning{ .buffer = try allocator.alloc(u8, 8) }});
 }
 
-test "spawn: defers entity creation until the queue is flushed" {
+test "spawnOwned: defers entity creation until the queue is flushed" {
     const allocator = std.testing.allocator;
 
     const Position = struct { x: f32, y: f32 };
@@ -162,7 +162,7 @@ test "spawn: defers entity creation until the queue is flushed" {
 
     const commands = Commands.fromWorld(allocator, &world);
 
-    commands.spawn(.{Position{ .x = 1, .y = 2 }});
+    commands.spawnOwned(.{Position{ .x = 1, .y = 2 }});
     try std.testing.expectEqual(0, world.archetypes.items.len);
 
     world.command_queue.flush(allocator, &world);
@@ -178,7 +178,7 @@ test "despawn: defers entity removal until the queue is flushed" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    const entity = world.addEntity(allocator, .{Value{ .value = 1 }});
+    const entity = world.addEntityOwned(allocator, .{Value{ .value = 1 }});
 
     const commands = Commands.fromWorld(allocator, &world);
 
@@ -190,7 +190,7 @@ test "despawn: defers entity removal until the queue is flushed" {
     try std.testing.expectEqual(1, world.entity_free_list.items.len);
 }
 
-test "addResource: runs the resource's deinit when the queue is dropped unflushed" {
+test "addResourceOwned: runs the resource's deinit when the queue is dropped unflushed" {
     const allocator = std.testing.allocator;
 
     const Owning = struct {
@@ -204,10 +204,10 @@ test "addResource: runs the resource's deinit when the queue is dropped unflushe
     var world = World.init();
     defer world.deinit(allocator);
 
-    Commands.fromWorld(allocator, &world).addResource(Owning, .{ .buffer = try allocator.alloc(u8, 16) });
+    Commands.fromWorld(allocator, &world).addResourceOwned(Owning, .{ .buffer = try allocator.alloc(u8, 16) });
 }
 
-test "addResource: defers registration until the queue is flushed" {
+test "addResourceOwned: defers registration until the queue is flushed" {
     const allocator = std.testing.allocator;
 
     const Config = struct { scale: f32 };
@@ -215,7 +215,7 @@ test "addResource: defers registration until the queue is flushed" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    Commands.fromWorld(allocator, &world).addResource(Config, .{ .scale = 2 });
+    Commands.fromWorld(allocator, &world).addResourceOwned(Config, .{ .scale = 2 });
     try std.testing.expectEqual(null, world.getResource(Config));
 
     world.command_queue.flush(allocator, &world);
@@ -240,7 +240,7 @@ test "removeResource: defers removal until the queue is flushed" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    world.addResource(allocator, Tracked, .{});
+    world.addResourceOwned(allocator, Tracked, .{});
 
     Commands.fromWorld(allocator, &world).removeResource(Tracked);
     try std.testing.expectEqual(0, State.deinits);

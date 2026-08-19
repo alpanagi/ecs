@@ -92,7 +92,7 @@ pub const World = struct {
         self.entity_free_list.deinit(allocator);
     }
 
-    pub fn addEntity(self: *World, allocator: std.mem.Allocator, components: anytype) Entity {
+    pub fn addEntityOwned(self: *World, allocator: std.mem.Allocator, components: anytype) Entity {
         const types = comptime componentTypes(@TypeOf(components));
 
         var values: @Tuple(types) = components;
@@ -192,11 +192,11 @@ pub const World = struct {
         self.system_registry.addObserverEntry(allocator, event_id, buildObserverEntry(function, plugin));
     }
 
-    pub fn addPlugin(self: *World, allocator: std.mem.Allocator, comptime T: type) void {
-        self.plugin_registry.addPlugin(allocator, self, T);
+    pub fn addPluginOwned(self: *World, allocator: std.mem.Allocator, plugin: anytype) void {
+        self.plugin_registry.addPlugin(allocator, self, plugin);
     }
 
-    pub fn addResource(
+    pub fn addResourceOwned(
         self: *World,
         allocator: std.mem.Allocator,
         comptime T: type,
@@ -364,7 +364,7 @@ test "deinit: deinits every archetype it owns" {
     world.deinit(allocator);
 }
 
-test "addEntity: creates an entity in a new archetype" {
+test "addEntityOwned: creates an entity in a new archetype" {
     const allocator = std.testing.allocator;
 
     const Position = struct { x: f32, y: f32 };
@@ -373,7 +373,7 @@ test "addEntity: creates an entity in a new archetype" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    const entity = world.addEntity(
+    const entity = world.addEntityOwned(
         allocator,
         .{ Position{ .x = 1, .y = 2 }, Velocity{ .dx = 3, .dy = 4 } },
     );
@@ -384,7 +384,7 @@ test "addEntity: creates an entity in a new archetype" {
     try std.testing.expectEqual(0, world.entity_descriptors.items[0].row);
 }
 
-test "addEntity: reuses the archetype for the same component set" {
+test "addEntityOwned: reuses the archetype for the same component set" {
     const allocator = std.testing.allocator;
 
     const Position = struct { x: f32, y: f32 };
@@ -393,11 +393,11 @@ test "addEntity: reuses the archetype for the same component set" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    const first = world.addEntity(
+    const first = world.addEntityOwned(
         allocator,
         .{ Position{ .x = 1, .y = 1 }, Velocity{ .dx = 1, .dy = 1 } },
     );
-    const second = world.addEntity(
+    const second = world.addEntityOwned(
         allocator,
         .{ Position{ .x = 2, .y = 2 }, Velocity{ .dx = 2, .dy = 2 } },
     );
@@ -411,7 +411,7 @@ test "addEntity: reuses the archetype for the same component set" {
     try std.testing.expectEqual(1, world.entity_descriptors.items[second.id].row);
 }
 
-test "addEntity: stores the entity's component values" {
+test "addEntityOwned: stores the entity's component values" {
     const allocator = std.testing.allocator;
 
     const Position = struct { x: f32, y: f32 };
@@ -419,7 +419,7 @@ test "addEntity: stores the entity's component values" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    const entity = world.addEntity(allocator, .{Position{ .x = 5, .y = 6 }});
+    const entity = world.addEntityOwned(allocator, .{Position{ .x = 5, .y = 6 }});
 
     const archetype_id = world.entity_descriptors.items[entity.id].archetype.?;
     const archetype_slot = world.entity_descriptors.items[entity.id].row;
@@ -429,7 +429,7 @@ test "addEntity: stores the entity's component values" {
     try std.testing.expectEqual(Position{ .x = 5, .y = 6 }, position[0].*);
 }
 
-test "addEntity: creates an entity from three component types" {
+test "addEntityOwned: creates an entity from three component types" {
     const allocator = std.testing.allocator;
 
     const Position = struct { x: f32, y: f32 };
@@ -439,7 +439,7 @@ test "addEntity: creates an entity from three component types" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    const entity = world.addEntity(allocator, .{
+    const entity = world.addEntityOwned(allocator, .{
         Position{ .x = 1, .y = 2 },
         Velocity{ .dx = 3, .dy = 4 },
         Health{ .hp = 100 },
@@ -459,7 +459,7 @@ test "addEntity: creates an entity from three component types" {
     try std.testing.expectEqual(Health{ .hp = 100 }, health.*);
 }
 
-test "addEntity: creates the entity immediately" {
+test "addEntityOwned: creates the entity immediately" {
     const allocator = std.testing.allocator;
 
     const Position = struct { x: f32, y: f32 };
@@ -467,13 +467,13 @@ test "addEntity: creates the entity immediately" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    _ = world.addEntity(allocator, .{Position{ .x = 1, .y = 2 }});
+    _ = world.addEntityOwned(allocator, .{Position{ .x = 1, .y = 2 }});
 
     try std.testing.expectEqual(1, world.archetypes.items.len);
     try std.testing.expectEqual(1, world.archetypes.items[0].entity_count);
 }
 
-test "addEntity: triggers ComponentAdded for each component" {
+test "addEntityOwned: triggers ComponentAdded for each component" {
     const allocator = std.testing.allocator;
 
     const Position = struct { x: f32, y: f32 };
@@ -500,13 +500,13 @@ test "addEntity: triggers ComponentAdded for each component" {
     world.addObserver(allocator, component_events.added(Position), onPositionAdded, null);
     world.addObserver(allocator, component_events.added(Velocity), onVelocityAdded, null);
 
-    const entity = world.addEntity(allocator, .{ Position{ .x = 1, .y = 2 }, Velocity{ .dx = 3, .dy = 4 } });
+    const entity = world.addEntityOwned(allocator, .{ Position{ .x = 1, .y = 2 }, Velocity{ .dx = 3, .dy = 4 } });
 
     try std.testing.expectEqual(entity, State.position_entity);
     try std.testing.expectEqual(entity, State.velocity_entity);
 }
 
-test "addEntity: triggers nothing for a component with no observer" {
+test "addEntityOwned: triggers nothing for a component with no observer" {
     const allocator = std.testing.allocator;
 
     const Position = struct { x: f32, y: f32 };
@@ -526,12 +526,12 @@ test "addEntity: triggers nothing for a component with no observer" {
 
     world.addObserver(allocator, component_events.added(Position), onPositionAdded, null);
 
-    _ = world.addEntity(allocator, .{Velocity{ .dx = 1, .dy = 1 }});
+    _ = world.addEntityOwned(allocator, .{Velocity{ .dx = 1, .dy = 1 }});
 
     try std.testing.expectEqual(null, State.position_entity);
 }
 
-test "addEntity: triggers lifecycle events for a marker component" {
+test "addEntityOwned: triggers lifecycle events for a marker component" {
     const allocator = std.testing.allocator;
 
     const Player = struct {};
@@ -559,7 +559,7 @@ test "addEntity: triggers lifecycle events for a marker component" {
     world.addObserver(allocator, component_events.added(Player), Handlers.onAdded, null);
     world.addObserver(allocator, component_events.destroying(Player), Handlers.onDestroying, null);
 
-    const entity = world.addEntity(allocator, .{Player{}});
+    const entity = world.addEntityOwned(allocator, .{Player{}});
     try std.testing.expectEqual(1, State.added);
     try std.testing.expectEqual(0, State.destroying);
 
@@ -586,7 +586,7 @@ test "removeEntity: does nothing for a stale generation" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    const entity = world.addEntity(allocator, .{Value{ .value = 1 }});
+    const entity = world.addEntityOwned(allocator, .{Value{ .value = 1 }});
 
     world.removeEntity(allocator, entity);
     // entity is now stale (generation bumped); removing it again must be a
@@ -604,7 +604,7 @@ test "removeEntity: marks the descriptor dead and recycles its id" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    const entity = world.addEntity(allocator, .{Value{ .value = 1 }});
+    const entity = world.addEntityOwned(allocator, .{Value{ .value = 1 }});
 
     world.removeEntity(allocator, entity);
 
@@ -622,9 +622,9 @@ test "removeEntity: fixes up the relocated entity's row" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    const first = world.addEntity(allocator, .{Value{ .value = 1 }});
-    _ = world.addEntity(allocator, .{Value{ .value = 2 }});
-    const third = world.addEntity(allocator, .{Value{ .value = 3 }});
+    const first = world.addEntityOwned(allocator, .{Value{ .value = 1 }});
+    _ = world.addEntityOwned(allocator, .{Value{ .value = 2 }});
+    const third = world.addEntityOwned(allocator, .{Value{ .value = 3 }});
 
     world.removeEntity(allocator, first);
 
@@ -652,7 +652,7 @@ test "removeEntity: deinits memory owned by the removed entity's components" {
     defer world.deinit(allocator);
 
     const owning = try OwningComponent.init(allocator);
-    const entity = world.addEntity(allocator, .{owning});
+    const entity = world.addEntityOwned(allocator, .{owning});
 
     world.removeEntity(allocator, entity);
 }
@@ -665,10 +665,10 @@ test "removeEntity: bumps the generation before the id is reused" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    const first = world.addEntity(allocator, .{Value{ .value = 1 }});
+    const first = world.addEntityOwned(allocator, .{Value{ .value = 1 }});
     world.removeEntity(allocator, first);
 
-    const second = world.addEntity(allocator, .{Value{ .value = 2 }});
+    const second = world.addEntityOwned(allocator, .{Value{ .value = 2 }});
 
     try std.testing.expectEqual(first.id, second.id);
     try std.testing.expectEqual(first.generation + 1, second.generation);
@@ -693,7 +693,7 @@ test "removeEntity: triggers ComponentDestroying for each component" {
 
     world.addObserver(allocator, component_events.destroying(Position), onPositionDestroying, null);
 
-    const entity = world.addEntity(allocator, .{Position{ .x = 1, .y = 2 }});
+    const entity = world.addEntityOwned(allocator, .{Position{ .x = 1, .y = 2 }});
     world.removeEntity(allocator, entity);
 
     try std.testing.expectEqual(entity, State.destroying_entity);
@@ -719,7 +719,7 @@ test "removeEntity: triggers ComponentDestroying while the component is readable
 
     world.addObserver(allocator, component_events.destroying(Position), onPositionDestroying, null);
 
-    const entity = world.addEntity(allocator, .{Position{ .x = 1, .y = 2 }});
+    const entity = world.addEntityOwned(allocator, .{Position{ .x = 1, .y = 2 }});
     world.removeEntity(allocator, entity);
 
     try std.testing.expectEqual(Position{ .x = 1, .y = 2 }, State.observed);
@@ -734,8 +734,8 @@ test "removeEntity: leaves a marker intact after another entity is swapped out" 
     var world = World.init();
     defer world.deinit(allocator);
 
-    const first = world.addEntity(allocator, .{ Player{}, Position{ .x = 1, .y = 1 } });
-    const second = world.addEntity(allocator, .{ Player{}, Position{ .x = 2, .y = 2 } });
+    const first = world.addEntityOwned(allocator, .{ Player{}, Position{ .x = 1, .y = 1 } });
+    const second = world.addEntityOwned(allocator, .{ Player{}, Position{ .x = 2, .y = 2 } });
 
     world.removeEntity(allocator, first);
 
@@ -790,40 +790,19 @@ test "addSystem: groups systems by name in call order" {
     try std.testing.expectEqualSlices(u8, &.{ 1, 2 }, &State.calls);
 }
 
-test "addPlugin: runs the plugin's init immediately" {
-    const State = struct {
-        var initialized: bool = false;
-    };
-    const Plugin = struct {
-        pub fn init(_: std.mem.Allocator) @This() {
-            State.initialized = true;
-            return .{};
-        }
-
-        pub fn build(_: *@This(), _: std.mem.Allocator) void {}
-    };
-
-    var world = World.init();
-    defer world.deinit(std.testing.allocator);
-
-    world.addPlugin(std.testing.allocator, Plugin);
-
-    try std.testing.expect(State.initialized);
-}
-
-test "addResource: stores a value that getResource returns" {
+test "addResourceOwned: stores a value that getResource returns" {
     const ClearColor = struct { r: f32, g: f32, b: f32 };
 
     var world = World.init();
     defer world.deinit(std.testing.allocator);
 
-    world.addResource(std.testing.allocator, ClearColor, .{ .r = 0, .g = 1, .b = 0 });
+    world.addResourceOwned(std.testing.allocator, ClearColor, .{ .r = 0, .g = 1, .b = 0 });
 
     const color = world.getResource(ClearColor).?;
     try std.testing.expectEqual(ClearColor{ .r = 0, .g = 1, .b = 0 }, color.*);
 }
 
-test "addResource: triggers ResourceAdded" {
+test "addResourceOwned: triggers ResourceAdded" {
     const allocator = std.testing.allocator;
 
     const Config = struct { scale: f32 };
@@ -843,12 +822,12 @@ test "addResource: triggers ResourceAdded" {
     defer world.deinit(allocator);
 
     world.addObserver(allocator, resource_events.added(Config), onAdded, null);
-    world.addResource(allocator, Config, .{ .scale = 1 });
+    world.addResourceOwned(allocator, Config, .{ .scale = 1 });
 
     try std.testing.expectEqual(1, State.calls);
 }
 
-test "addResource: triggers Destroying for the old value then Added for the new" {
+test "addResourceOwned: triggers Destroying for the old value then Added for the new" {
     const allocator = std.testing.allocator;
 
     const Config = struct { scale: f32 };
@@ -883,15 +862,15 @@ test "addResource: triggers Destroying for the old value then Added for the new"
     world.addObserver(allocator, resource_events.added(Config), Handlers.onAdded, null);
     world.addObserver(allocator, resource_events.destroying(Config), Handlers.onDestroying, null);
 
-    world.addResource(allocator, Config, .{ .scale = 1 });
-    world.addResource(allocator, Config, .{ .scale = 2 });
+    world.addResourceOwned(allocator, Config, .{ .scale = 1 });
+    world.addResourceOwned(allocator, Config, .{ .scale = 2 });
 
     try std.testing.expectEqualSlices(u8, &.{ 1, 2, 1 }, State.log[0..State.count]);
     try std.testing.expectEqual(@as(f32, 1), State.scale_at_destroying.?);
     try std.testing.expectEqual(@as(f32, 2), State.scale_at_added.?);
 }
 
-test "addResource: does not trigger component events for the same type" {
+test "addResourceOwned: does not trigger component events for the same type" {
     const allocator = std.testing.allocator;
 
     const Shared = struct { value: u32 };
@@ -919,11 +898,11 @@ test "addResource: does not trigger component events for the same type" {
     world.addObserver(allocator, resource_events.added(Shared), Handlers.onResource, null);
     world.addObserver(allocator, component_events.added(Shared), Handlers.onComponent, null);
 
-    _ = world.addEntity(allocator, .{Shared{ .value = 1 }});
+    _ = world.addEntityOwned(allocator, .{Shared{ .value = 1 }});
     try std.testing.expectEqual(1, State.component_added);
     try std.testing.expectEqual(0, State.resource_added);
 
-    world.addResource(allocator, Shared, .{ .value = 2 });
+    world.addResourceOwned(allocator, Shared, .{ .value = 2 });
     try std.testing.expectEqual(1, State.component_added);
     try std.testing.expectEqual(1, State.resource_added);
 }
@@ -941,7 +920,7 @@ test "removeResource: removes the resource and calls its deinit" {
     var world = World.init();
     defer world.deinit(std.testing.allocator);
 
-    world.addResource(std.testing.allocator, Tracked, .{});
+    world.addResourceOwned(std.testing.allocator, Tracked, .{});
     world.removeResource(std.testing.allocator, Tracked);
 
     try std.testing.expectEqual(1, State.count);
@@ -968,7 +947,7 @@ test "removeResource: triggers ResourceDestroying while the value is readable" {
     defer world.deinit(allocator);
 
     world.addObserver(allocator, resource_events.destroying(Config), onDestroying, null);
-    world.addResource(allocator, Config, .{ .scale = 5 });
+    world.addResourceOwned(allocator, Config, .{ .scale = 5 });
     world.removeResource(allocator, Config);
 
     try std.testing.expectEqual(@as(f32, 5), State.seen.?);
@@ -1009,7 +988,7 @@ test "getEntity: returns pointers to the requested components" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    const entity = world.addEntity(
+    const entity = world.addEntityOwned(
         allocator,
         .{ Position{ .x = 1, .y = 2 }, Velocity{ .dx = 3, .dy = 4 } },
     );
@@ -1040,7 +1019,7 @@ test "getEntity: returns InvalidEntity for a stale generation" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    const entity = world.addEntity(allocator, .{Value{ .value = 1 }});
+    const entity = world.addEntityOwned(allocator, .{Value{ .value = 1 }});
     world.removeEntity(allocator, entity);
 
     try std.testing.expectError(
@@ -1058,7 +1037,7 @@ test "getEntity: returns UnknownComponent for a component the entity lacks" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    const entity = world.addEntity(allocator, .{Position{ .x = 1, .y = 2 }});
+    const entity = world.addEntityOwned(allocator, .{Position{ .x = 1, .y = 2 }});
 
     try std.testing.expectError(
         Error.UnknownComponent,
@@ -1075,7 +1054,7 @@ test "getEntity: returns UnknownComponent for a marker the entity lacks" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    const entity = world.addEntity(allocator, .{Position{ .x = 1, .y = 2 }});
+    const entity = world.addEntityOwned(allocator, .{Position{ .x = 1, .y = 2 }});
 
     try std.testing.expectError(
         Error.UnknownComponent,
@@ -1164,7 +1143,7 @@ test "runSystems: flushes commands queued by a system after each group" {
 
     const system = struct {
         fn call(commands: Commands) void {
-            commands.spawn(.{Position{ .x = 1, .y = 2 }});
+            commands.spawnOwned(.{Position{ .x = 1, .y = 2 }});
         }
     }.call;
 
@@ -1261,9 +1240,9 @@ test "findOrCreateArchetype: keeps archetypes with different marker sets apart" 
     var world = World.init();
     defer world.deinit(allocator);
 
-    _ = world.addEntity(allocator, .{Position{ .x = 1, .y = 1 }});
-    _ = world.addEntity(allocator, .{ Player{}, Position{ .x = 2, .y = 2 } });
-    _ = world.addEntity(allocator, .{ Frozen{}, Position{ .x = 3, .y = 3 } });
+    _ = world.addEntityOwned(allocator, .{Position{ .x = 1, .y = 1 }});
+    _ = world.addEntityOwned(allocator, .{ Player{}, Position{ .x = 2, .y = 2 } });
+    _ = world.addEntityOwned(allocator, .{ Frozen{}, Position{ .x = 3, .y = 3 } });
 
     try std.testing.expectEqual(3, world.archetypes.items.len);
 
@@ -1283,9 +1262,9 @@ test "findOrCreateArchetype: reuses the archetype for the same marker set" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    _ = world.addEntity(allocator, .{ Player{}, Position{ .x = 1, .y = 1 } });
-    _ = world.addEntity(allocator, .{ Player{}, Position{ .x = 2, .y = 2 } });
-    _ = world.addEntity(allocator, .{ Player{}, Position{ .x = 3, .y = 3 } });
+    _ = world.addEntityOwned(allocator, .{ Player{}, Position{ .x = 1, .y = 1 } });
+    _ = world.addEntityOwned(allocator, .{ Player{}, Position{ .x = 2, .y = 2 } });
+    _ = world.addEntityOwned(allocator, .{ Player{}, Position{ .x = 3, .y = 3 } });
 
     try std.testing.expectEqual(1, world.archetypes.items.len);
 
@@ -1350,8 +1329,8 @@ test "integration: a system can take a query as a parameter" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    _ = world.addEntity(allocator, .{Position{ .x = 1, .y = 0 }});
-    _ = world.addEntity(allocator, .{Position{ .x = 2, .y = 0 }});
+    _ = world.addEntityOwned(allocator, .{Position{ .x = 1, .y = 0 }});
+    _ = world.addEntityOwned(allocator, .{Position{ .x = 2, .y = 0 }});
 
     world.addSystem(allocator, "update", system, null);
     world.runSystems(allocator);
@@ -1394,8 +1373,8 @@ test "integration: a system can mix queries with other parameters in any order" 
     var world = World.init();
     defer world.deinit(allocator);
 
-    _ = world.addEntity(allocator, .{Position{ .x = 1, .y = 1 }});
-    _ = world.addEntity(allocator, .{ Position{ .x = 2, .y = 2 }, Velocity{ .dx = 1, .dy = 1 } });
+    _ = world.addEntityOwned(allocator, .{Position{ .x = 1, .y = 1 }});
+    _ = world.addEntityOwned(allocator, .{ Position{ .x = 2, .y = 2 }, Velocity{ .dx = 1, .dy = 1 } });
 
     world.addSystem(allocator, "update", system, null);
     world.runSystems(allocator);
@@ -1420,7 +1399,7 @@ test "integration: a query parameter can mutate the components it yields" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    const entity = world.addEntity(allocator, .{Position{ .x = 1, .y = 0 }});
+    const entity = world.addEntityOwned(allocator, .{Position{ .x = 1, .y = 0 }});
 
     world.addSystem(allocator, "update", system, null);
     world.runSystems(allocator);
@@ -1448,8 +1427,8 @@ test "integration: a system can mix resources, queries and the world" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    world.addResource(allocator, Gravity, .{ .value = 2 });
-    const entity = world.addEntity(allocator, .{Position{ .x = 0, .y = 10 }});
+    world.addResourceOwned(allocator, Gravity, .{ .value = 2 });
+    const entity = world.addEntityOwned(allocator, .{Position{ .x = 0, .y = 10 }});
     world.addSystem(allocator, "update", system, null);
 
     world.runSystems(allocator);
@@ -1493,10 +1472,10 @@ test "integration: a plugin system and observer can declare parameters beyond th
     var world = World.init();
     defer world.deinit(allocator);
 
-    _ = world.addEntity(allocator, .{Position{ .x = 0, .y = 0 }});
-    _ = world.addEntity(allocator, .{Position{ .x = 5, .y = 0 }});
+    _ = world.addEntityOwned(allocator, .{Position{ .x = 0, .y = 0 }});
+    _ = world.addEntityOwned(allocator, .{Position{ .x = 5, .y = 0 }});
 
-    world.addPlugin(allocator, Plugin);
+    world.addPluginOwned(allocator, Plugin{});
     world.runSystems(allocator);
     world.trigger(allocator, Damage{ .amount = 7 });
 
@@ -1534,8 +1513,8 @@ test "integration: a plugin can still query entities from its deinit" {
 
         pub fn build(self: *@This(), plugin_allocator: std.mem.Allocator, world: WorldRef) void {
             self.world = world.world;
-            _ = world.world.addEntity(plugin_allocator, .{Position{ .x = 1, .y = 1 }});
-            _ = world.world.addEntity(plugin_allocator, .{Position{ .x = 2, .y = 2 }});
+            _ = world.world.addEntityOwned(plugin_allocator, .{Position{ .x = 1, .y = 1 }});
+            _ = world.world.addEntityOwned(plugin_allocator, .{Position{ .x = 2, .y = 2 }});
         }
 
         pub fn deinit(self: *@This(), _: std.mem.Allocator) void {
@@ -1546,7 +1525,7 @@ test "integration: a plugin can still query entities from its deinit" {
     };
 
     var world = World.init();
-    world.addPlugin(allocator, Plugin);
+    world.addPluginOwned(allocator, Plugin{});
     world.deinit(allocator);
 
     try std.testing.expectEqual(2, State.seen);
@@ -1572,7 +1551,7 @@ test "integration: a plugin's build can register systems" {
     var world = World.init();
     defer world.deinit(std.testing.allocator);
 
-    world.addPlugin(std.testing.allocator, Plugin);
+    world.addPluginOwned(std.testing.allocator, Plugin{});
 
     world.runSystems(std.testing.allocator);
     const entry: SystemEntry = world.system_registry.groups.values()[0].items[0];
@@ -1597,7 +1576,7 @@ test "integration: deinit calls a plugin's deinit" {
     };
 
     var world = World.init();
-    world.addPlugin(std.testing.allocator, Plugin);
+    world.addPluginOwned(std.testing.allocator, Plugin{});
     world.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(1, State.count);
@@ -1623,7 +1602,7 @@ test "integration: plugin systems share state across runs" {
 
     var world = World.init();
     defer world.deinit(std.testing.allocator);
-    world.addPlugin(std.testing.allocator, Plugin);
+    world.addPluginOwned(std.testing.allocator, Plugin{});
 
     world.runSystems(std.testing.allocator);
     world.runSystems(std.testing.allocator);
@@ -1652,7 +1631,7 @@ test "integration: a plugin's build can register an observer through Commands" {
     var world = World.init();
     defer world.deinit(std.testing.allocator);
 
-    world.addPlugin(std.testing.allocator, Plugin);
+    world.addPluginOwned(std.testing.allocator, Plugin{});
     world.flushSystemRegistrations(std.testing.allocator);
     world.trigger(std.testing.allocator, Damage{ .amount = 5 });
 
@@ -1677,7 +1656,7 @@ test "integration: a plugin's build registers a one shot system" {
     var world = World.init();
     defer world.deinit(std.testing.allocator);
 
-    world.addPlugin(std.testing.allocator, Plugin);
+    world.addPluginOwned(std.testing.allocator, Plugin{});
     world.runSystems(std.testing.allocator);
 
     const plugin: *Plugin = @ptrCast(@alignCast(world.plugin_registry.plugins.items[0].plugin));
@@ -1688,7 +1667,7 @@ test "integration: a plugin's build can register a resource, read later by a sys
     const ClearColor = struct { r: f32, g: f32, b: f32 };
     const ConfigPlugin = struct {
         pub fn build(_: *@This(), commands: Commands) void {
-            commands.addResource(ClearColor, .{ .r = 1, .g = 1, .b = 1 });
+            commands.addResourceOwned(ClearColor, .{ .r = 1, .g = 1, .b = 1 });
             commands.addSystem("update", fadeToBlack, null);
         }
 
@@ -1700,7 +1679,7 @@ test "integration: a plugin's build can register a resource, read later by a sys
     var world = World.init();
     defer world.deinit(std.testing.allocator);
 
-    world.addPlugin(std.testing.allocator, ConfigPlugin);
+    world.addPluginOwned(std.testing.allocator, ConfigPlugin{});
     world.runSystems(std.testing.allocator);
     world.runSystems(std.testing.allocator);
 
@@ -1724,7 +1703,7 @@ test "integration: a spawn through Commands triggers Added at the flush" {
     defer world.deinit(std.testing.allocator);
 
     world.addObserver(std.testing.allocator, component_events.added(Position), onPositionAdded, null);
-    Commands.fromWorld(std.testing.allocator, &world).spawn(.{Position{ .x = 1, .y = 2 }});
+    Commands.fromWorld(std.testing.allocator, &world).spawnOwned(.{Position{ .x = 1, .y = 2 }});
     try std.testing.expectEqual(null, State.added_entity);
 
     world.runSystems(std.testing.allocator);
@@ -1949,7 +1928,7 @@ test "integration: a plugin's build can register systems, one-shot systems and o
     var world = World.init();
     defer world.deinit(allocator);
 
-    world.addPlugin(allocator, Plugin);
+    world.addPluginOwned(allocator, Plugin{});
 
     world.runSystems(allocator);
     world.runSystems(allocator);
@@ -1988,7 +1967,7 @@ test "integration: a plugin system registering a plugin system through Commands 
     var world = World.init();
     defer world.deinit(allocator);
 
-    world.addPlugin(allocator, Plugin);
+    world.addPluginOwned(allocator, Plugin{});
     const plugin: *Plugin = @ptrCast(@alignCast(world.plugin_registry.plugins.items[0].plugin));
 
     world.runSystems(allocator);
@@ -2024,7 +2003,7 @@ test "integration: a resource removed through Commands stays readable for the re
     var world = World.init();
     defer world.deinit(allocator);
 
-    world.addResource(allocator, Config, .{ .scale = 1 });
+    world.addResourceOwned(allocator, Config, .{ .scale = 1 });
     world.addSystem(allocator, "update", Systems.remover, null);
     world.addSystem(allocator, "update", Systems.reader, null);
 
@@ -2046,7 +2025,7 @@ test "integration: a resource added through Commands is visible to the next grou
 
     const Systems = struct {
         fn producer(commands: Commands) void {
-            commands.addResource(Config, .{ .scale = 3 });
+            commands.addResourceOwned(Config, .{ .scale = 3 });
         }
 
         fn consumer(config: Resource(Config)) void {
@@ -2077,7 +2056,7 @@ test "integration: a plugin's build can register a resource through Commands" {
 
     const Plugin = struct {
         pub fn build(_: *@This(), commands: Commands) void {
-            commands.addResource(Config, .{ .scale = 4 });
+            commands.addResourceOwned(Config, .{ .scale = 4 });
             commands.addSystem("update", read, null);
         }
 
@@ -2089,7 +2068,7 @@ test "integration: a plugin's build can register a resource through Commands" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    world.addPlugin(allocator, Plugin);
+    world.addPluginOwned(allocator, Plugin{});
     try std.testing.expectEqual(null, world.getResource(Config));
 
     world.runSystems(allocator);
@@ -2105,7 +2084,7 @@ test "integration: an unflushed addResource value is freed without being applied
     var world = World.init();
     defer world.deinit(allocator);
 
-    Commands.fromWorld(allocator, &world).addResource(Config, .{ .scale = 1 });
+    Commands.fromWorld(allocator, &world).addResourceOwned(Config, .{ .scale = 1 });
 
     world.command_queue.deinit(allocator);
     world.command_queue = CommandQueue.init();
@@ -2126,7 +2105,7 @@ test "integration: an observer reached through Observers.trigger can queue defer
 
     const onSpawned = struct {
         fn call(commands: Commands, event: Event(Spawned)) void {
-            commands.spawn(.{Position{ .x = event.value.x, .y = 0 }});
+            commands.spawnOwned(.{Position{ .x = event.value.x, .y = 0 }});
         }
     }.call;
     const system = struct {
@@ -2222,8 +2201,8 @@ test "integration: a system follows an Entity stored in a component" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    const target = world.addEntity(allocator, .{Position{ .x = 5, .y = 0 }});
-    _ = world.addEntity(allocator, .{Target{ .entity = target }});
+    const target = world.addEntityOwned(allocator, .{Position{ .x = 5, .y = 0 }});
+    _ = world.addEntityOwned(allocator, .{Target{ .entity = target }});
 
     world.addSystem(allocator, "update", system, null);
     world.runSystems(allocator);
@@ -2245,7 +2224,7 @@ test "integration: a one-shot system sees resources its plugin's build created t
 
     const Plugin = struct {
         pub fn build(_: *@This(), commands: Commands) void {
-            commands.addResource(Config, .{ .scale = 2 });
+            commands.addResourceOwned(Config, .{ .scale = 2 });
             commands.addOneShotSystem(startup, null);
         }
 
@@ -2257,7 +2236,7 @@ test "integration: a one-shot system sees resources its plugin's build created t
     var world = World.init();
     defer world.deinit(allocator);
 
-    world.addPlugin(allocator, Plugin);
+    world.addPluginOwned(allocator, Plugin{});
     world.runSystems(allocator);
 
     try std.testing.expectEqual(@as(f32, 2), State.seen.?);
@@ -2275,7 +2254,7 @@ test "integration: a one-shot system sees resources another plugin's build creat
 
     const Provider = struct {
         pub fn build(_: *@This(), commands: Commands) void {
-            commands.addResource(Config, .{ .scale = 3 });
+            commands.addResourceOwned(Config, .{ .scale = 3 });
         }
     };
     const Consumer = struct {
@@ -2291,8 +2270,8 @@ test "integration: a one-shot system sees resources another plugin's build creat
     var world = World.init();
     defer world.deinit(allocator);
 
-    world.addPlugin(allocator, Consumer);
-    world.addPlugin(allocator, Provider);
+    world.addPluginOwned(allocator, Consumer{});
+    world.addPluginOwned(allocator, Provider{});
 
     world.runSystems(allocator);
 
@@ -2311,7 +2290,7 @@ test "integration: a one-shot system sees entities its plugin's build spawned th
 
     const Plugin = struct {
         pub fn build(_: *@This(), commands: Commands) void {
-            commands.spawn(.{Position{ .x = 1, .y = 1 }});
+            commands.spawnOwned(.{Position{ .x = 1, .y = 1 }});
             commands.addOneShotSystem(startup, null);
         }
 
@@ -2324,7 +2303,7 @@ test "integration: a one-shot system sees entities its plugin's build spawned th
     var world = World.init();
     defer world.deinit(allocator);
 
-    world.addPlugin(allocator, Plugin);
+    world.addPluginOwned(allocator, Plugin{});
     world.runSystems(allocator);
 
     try std.testing.expectEqual(1, State.seen);
@@ -2350,7 +2329,7 @@ test "integration: a resource Added observer can already read the resource" {
     defer world.deinit(allocator);
 
     world.addObserver(allocator, resource_events.added(Config), onAdded, null);
-    world.addResource(allocator, Config, .{ .scale = 3 });
+    world.addResourceOwned(allocator, Config, .{ .scale = 3 });
 
     try std.testing.expectEqual(@as(f32, 3), State.seen.?);
 }
@@ -2375,7 +2354,7 @@ test "integration: a resource added through Commands fires Added at the flush" {
     defer world.deinit(allocator);
 
     world.addObserver(allocator, resource_events.added(Config), onAdded, null);
-    Commands.fromWorld(allocator, &world).addResource(Config, .{ .scale = 1 });
+    Commands.fromWorld(allocator, &world).addResourceOwned(Config, .{ .scale = 1 });
     try std.testing.expectEqual(0, State.calls);
 
     world.command_queue.flush(allocator, &world);
@@ -2403,7 +2382,7 @@ test "integration: a resource removed through Commands fires Destroying at the f
     defer world.deinit(allocator);
 
     world.addObserver(allocator, resource_events.destroying(Config), onDestroying, null);
-    world.addResource(allocator, Config, .{ .scale = 1 });
+    world.addResourceOwned(allocator, Config, .{ .scale = 1 });
 
     Commands.fromWorld(allocator, &world).removeResource(Config);
     try std.testing.expectEqual(0, State.calls);

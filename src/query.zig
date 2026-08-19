@@ -88,7 +88,7 @@ test "fromWorld: binds the world the query reads from" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    _ = world.addEntity(allocator, .{Position{ .x = 1, .y = 2 }});
+    _ = world.addEntityOwned(allocator, .{Position{ .x = 1, .y = 2 }});
 
     const query = Query(&.{Position}).fromWorld(allocator, &world);
     const position = query.first() orelse return error.TestUnexpectedResult;
@@ -106,8 +106,8 @@ test "iterator: yields every entity across all matching archetypes" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    _ = world.addEntity(allocator, .{Position{ .x = 1, .y = 1 }});
-    _ = world.addEntity(allocator, .{ Position{ .x = 2, .y = 2 }, Velocity{ .dx = 2, .dy = 2 } });
+    _ = world.addEntityOwned(allocator, .{Position{ .x = 1, .y = 1 }});
+    _ = world.addEntityOwned(allocator, .{ Position{ .x = 2, .y = 2 }, Velocity{ .dx = 2, .dy = 2 } });
 
     var count: usize = 0;
     var sum_x: f32 = 0;
@@ -132,8 +132,8 @@ test "iterator: resolves component columns separately for each archetype" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    _ = world.addEntity(allocator, .{Position{ .x = 1, .y = 1 }});
-    _ = world.addEntity(allocator, .{ Position{ .x = 2, .y = 2 }, Anchor{ .value = 7 } });
+    _ = world.addEntityOwned(allocator, .{Position{ .x = 1, .y = 1 }});
+    _ = world.addEntityOwned(allocator, .{ Position{ .x = 2, .y = 2 }, Anchor{ .value = 7 } });
 
     var lone: [1]Column = undefined;
     var shared: [1]Column = undefined;
@@ -164,7 +164,7 @@ test "iterator: returns null when no archetype matches" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    _ = world.addEntity(allocator, .{Velocity{ .dx = 1, .dy = 1 }});
+    _ = world.addEntityOwned(allocator, .{Velocity{ .dx = 1, .dy = 1 }});
 
     const query = world.query(&.{Position});
     var it = query.iterator();
@@ -180,8 +180,8 @@ test "iterator: skips archetypes without the requested components" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    _ = world.addEntity(allocator, .{Velocity{ .dx = 1, .dy = 1 }});
-    _ = world.addEntity(allocator, .{Position{ .x = 5, .y = 5 }});
+    _ = world.addEntityOwned(allocator, .{Velocity{ .dx = 1, .dy = 1 }});
+    _ = world.addEntityOwned(allocator, .{Position{ .x = 5, .y = 5 }});
 
     var count: usize = 0;
     const query = world.query(&.{Position});
@@ -202,8 +202,8 @@ test "iterator: is independent of others made from the same query" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    _ = world.addEntity(allocator, .{Position{ .x = 1, .y = 1 }});
-    _ = world.addEntity(allocator, .{Position{ .x = 2, .y = 2 }});
+    _ = world.addEntityOwned(allocator, .{Position{ .x = 1, .y = 1 }});
+    _ = world.addEntityOwned(allocator, .{Position{ .x = 2, .y = 2 }});
 
     const query = world.query(&.{Position});
 
@@ -225,7 +225,7 @@ test "iterator: can be made again after one is exhausted" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    _ = world.addEntity(allocator, .{Position{ .x = 3, .y = 3 }});
+    _ = world.addEntityOwned(allocator, .{Position{ .x = 3, .y = 3 }});
 
     const query = world.query(&.{Position});
 
@@ -246,7 +246,7 @@ test "iterator: yields the components in the order the query declares them" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    _ = world.addEntity(allocator, .{ Position{ .x = 1, .y = 2 }, Velocity{ .dx = 3, .dy = 4 } });
+    _ = world.addEntityOwned(allocator, .{ Position{ .x = 1, .y = 2 }, Velocity{ .dx = 3, .dy = 4 } });
 
     var forward = world.query(&.{ Position, Velocity }).iterator();
     const position, const velocity = forward.next().?;
@@ -270,8 +270,8 @@ test "iterator: filters on a marker without yielding storage" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    _ = world.addEntity(allocator, .{ Player{}, Position{ .x = 1, .y = 2 } });
-    _ = world.addEntity(allocator, .{Position{ .x = 3, .y = 4 }});
+    _ = world.addEntityOwned(allocator, .{ Player{}, Position{ .x = 1, .y = 2 } });
+    _ = world.addEntityOwned(allocator, .{Position{ .x = 3, .y = 4 }});
 
     var it = world.query(&.{ Player, Position }).iterator();
     var matched: usize = 0;
@@ -293,8 +293,8 @@ test "iterator: matches an entity carrying components beyond the query" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    _ = world.addEntity(allocator, .{ Player{}, Position{ .x = 1, .y = 2 } });
-    _ = world.addEntity(allocator, .{Position{ .x = 3, .y = 4 }});
+    _ = world.addEntityOwned(allocator, .{ Player{}, Position{ .x = 1, .y = 2 } });
+    _ = world.addEntityOwned(allocator, .{Position{ .x = 3, .y = 4 }});
 
     var it = world.query(&.{Position}).iterator();
     var matched: usize = 0;
@@ -311,7 +311,7 @@ test "iterator: yields an entity built only from markers" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    _ = world.addEntity(allocator, .{Player{}});
+    _ = world.addEntityOwned(allocator, .{Player{}});
 
     try std.testing.expect(world.query(&.{Player}).first() != null);
 }
@@ -324,8 +324,8 @@ test "first: returns the first matching entity's components" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    _ = world.addEntity(allocator, .{Position{ .x = 1, .y = 2 }});
-    _ = world.addEntity(allocator, .{Position{ .x = 3, .y = 4 }});
+    _ = world.addEntityOwned(allocator, .{Position{ .x = 1, .y = 2 }});
+    _ = world.addEntityOwned(allocator, .{Position{ .x = 3, .y = 4 }});
 
     const position = world.query(&.{Position}).first() orelse
         return error.TestUnexpectedResult;
@@ -341,7 +341,7 @@ test "first: writes through to the stored components" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    const entity = world.addEntity(allocator, .{Position{ .x = 1, .y = 0 }});
+    const entity = world.addEntityOwned(allocator, .{Position{ .x = 1, .y = 0 }});
 
     const position = world.query(&.{Position}).first() orelse
         return error.TestUnexpectedResult;
@@ -360,7 +360,7 @@ test "first: returns null when nothing matches" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    _ = world.addEntity(allocator, .{Position{ .x = 1, .y = 2 }});
+    _ = world.addEntityOwned(allocator, .{Position{ .x = 1, .y = 2 }});
 
     try std.testing.expectEqual(null, world.query(&.{Velocity}).first());
 }
@@ -373,8 +373,8 @@ test "first: skips despawned entities" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    const entity = world.addEntity(allocator, .{Position{ .x = 1, .y = 2 }});
-    _ = world.addEntity(allocator, .{Position{ .x = 3, .y = 4 }});
+    const entity = world.addEntityOwned(allocator, .{Position{ .x = 1, .y = 2 }});
+    _ = world.addEntityOwned(allocator, .{Position{ .x = 3, .y = 4 }});
     world.removeEntity(allocator, entity);
 
     const position = world.query(&.{Position}).first() orelse
@@ -392,7 +392,7 @@ test "get: returns pointers to the components the query declares" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    const entity = world.addEntity(
+    const entity = world.addEntityOwned(
         allocator,
         .{ Position{ .x = 1, .y = 2 }, Velocity{ .dx = 3, .dy = 4 } },
     );
@@ -411,7 +411,7 @@ test "get: writes through to the stored components" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    const entity = world.addEntity(allocator, .{Position{ .x = 1, .y = 0 }});
+    const entity = world.addEntityOwned(allocator, .{Position{ .x = 1, .y = 0 }});
 
     const position = try world.query(&.{Position}).get(entity);
     position[0].x += 10;
@@ -429,7 +429,7 @@ test "get: returns UnknownComponent for an entity outside the query" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    const entity = world.addEntity(allocator, .{Position{ .x = 1, .y = 2 }});
+    const entity = world.addEntityOwned(allocator, .{Position{ .x = 1, .y = 2 }});
 
     try std.testing.expectError(
         Error.UnknownComponent,
@@ -459,7 +459,7 @@ test "get: returns InvalidEntity for a despawned entity" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    const entity = world.addEntity(allocator, .{Position{ .x = 1, .y = 2 }});
+    const entity = world.addEntityOwned(allocator, .{Position{ .x = 1, .y = 2 }});
     world.removeEntity(allocator, entity);
 
     try std.testing.expectError(
