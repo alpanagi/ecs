@@ -2,9 +2,9 @@ const std = @import("std");
 
 const ComponentData = @import("component.zig").ComponentData;
 const ComponentDescriptor = @import("component.zig").ComponentDescriptor;
-const Error = @import("error.zig").Error;
-const panic = @import("util.zig").panic;
-const panicOom = @import("util.zig").panicOom;
+const Error = @import("../error.zig").Error;
+const panic = @import("../utils.zig").panic;
+const panicOom = @import("../utils.zig").panicOom;
 
 const preallocated_entities_count: usize = 16;
 var no_component_bytes: [0]u8 = .{};

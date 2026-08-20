@@ -1,11 +1,11 @@
 const std = @import("std");
 
-const Column = @import("archetype.zig").Column;
-const Entity = @import("entity.zig").Entity;
-const Error = @import("error.zig").Error;
-const World = @import("world.zig").World;
-const ComponentPointers = @import("component.zig").ComponentPointers;
-const componentId = @import("component.zig").componentId;
+const Column = @import("../../core/archetype.zig").Column;
+const Entity = @import("../../core/entity.zig").Entity;
+const Error = @import("../../error.zig").Error;
+const World = @import("../../core/world.zig").World;
+const ComponentPointers = @import("../../core/component.zig").ComponentPointers;
+const componentId = @import("../../core/component.zig").componentId;
 
 pub fn Query(comptime components: []const type) type {
     return struct {
@@ -85,7 +85,7 @@ test "fromWorld: binds the world the query reads from" {
 
     const Position = struct { x: f32, y: f32 };
 
-    var world = World.init();
+    var world = World.init(allocator);
     defer world.deinit(allocator);
 
     _ = world.addOwnedEntity(allocator, .{Position{ .x = 1, .y = 2 }});
@@ -103,7 +103,7 @@ test "iterator: yields every entity across all matching archetypes" {
     const Position = struct { x: f32, y: f32 };
     const Velocity = struct { dx: f32, dy: f32 };
 
-    var world = World.init();
+    var world = World.init(allocator);
     defer world.deinit(allocator);
 
     _ = world.addOwnedEntity(allocator, .{Position{ .x = 1, .y = 1 }});
@@ -129,7 +129,7 @@ test "iterator: resolves component columns separately for each archetype" {
     const Position = struct { x: f32, y: f32 };
     const Anchor = struct { value: u64 };
 
-    var world = World.init();
+    var world = World.init(allocator);
     defer world.deinit(allocator);
 
     _ = world.addOwnedEntity(allocator, .{Position{ .x = 1, .y = 1 }});
@@ -161,7 +161,7 @@ test "iterator: returns null when no archetype matches" {
     const Position = struct { x: f32, y: f32 };
     const Velocity = struct { dx: f32, dy: f32 };
 
-    var world = World.init();
+    var world = World.init(allocator);
     defer world.deinit(allocator);
 
     _ = world.addOwnedEntity(allocator, .{Velocity{ .dx = 1, .dy = 1 }});
@@ -177,7 +177,7 @@ test "iterator: skips archetypes without the requested components" {
     const Position = struct { x: f32, y: f32 };
     const Velocity = struct { dx: f32, dy: f32 };
 
-    var world = World.init();
+    var world = World.init(allocator);
     defer world.deinit(allocator);
 
     _ = world.addOwnedEntity(allocator, .{Velocity{ .dx = 1, .dy = 1 }});
@@ -199,7 +199,7 @@ test "iterator: is independent of others made from the same query" {
 
     const Position = struct { x: f32, y: f32 };
 
-    var world = World.init();
+    var world = World.init(allocator);
     defer world.deinit(allocator);
 
     _ = world.addOwnedEntity(allocator, .{Position{ .x = 1, .y = 1 }});
@@ -222,7 +222,7 @@ test "iterator: can be made again after one is exhausted" {
 
     const Position = struct { x: f32, y: f32 };
 
-    var world = World.init();
+    var world = World.init(allocator);
     defer world.deinit(allocator);
 
     _ = world.addOwnedEntity(allocator, .{Position{ .x = 3, .y = 3 }});
@@ -243,7 +243,7 @@ test "iterator: yields the components in the order the query declares them" {
     const Position = struct { x: f32, y: f32 };
     const Velocity = struct { dx: f32, dy: f32 };
 
-    var world = World.init();
+    var world = World.init(allocator);
     defer world.deinit(allocator);
 
     _ = world.addOwnedEntity(allocator, .{ Position{ .x = 1, .y = 2 }, Velocity{ .dx = 3, .dy = 4 } });
@@ -267,7 +267,7 @@ test "iterator: filters on a marker without yielding storage" {
     const Player = struct {};
     const Position = struct { x: f32, y: f32 };
 
-    var world = World.init();
+    var world = World.init(allocator);
     defer world.deinit(allocator);
 
     _ = world.addOwnedEntity(allocator, .{ Player{}, Position{ .x = 1, .y = 2 } });
@@ -290,7 +290,7 @@ test "iterator: matches an entity carrying components beyond the query" {
     const Player = struct {};
     const Position = struct { x: f32, y: f32 };
 
-    var world = World.init();
+    var world = World.init(allocator);
     defer world.deinit(allocator);
 
     _ = world.addOwnedEntity(allocator, .{ Player{}, Position{ .x = 1, .y = 2 } });
@@ -308,7 +308,7 @@ test "iterator: yields an entity built only from markers" {
 
     const Player = struct {};
 
-    var world = World.init();
+    var world = World.init(allocator);
     defer world.deinit(allocator);
 
     _ = world.addOwnedEntity(allocator, .{Player{}});
@@ -321,7 +321,7 @@ test "first: returns the first matching entity's components" {
 
     const Position = struct { x: f32, y: f32 };
 
-    var world = World.init();
+    var world = World.init(allocator);
     defer world.deinit(allocator);
 
     _ = world.addOwnedEntity(allocator, .{Position{ .x = 1, .y = 2 }});
@@ -338,7 +338,7 @@ test "first: writes through to the stored components" {
 
     const Position = struct { x: f32, y: f32 };
 
-    var world = World.init();
+    var world = World.init(allocator);
     defer world.deinit(allocator);
 
     const entity = world.addOwnedEntity(allocator, .{Position{ .x = 1, .y = 0 }});
@@ -357,7 +357,7 @@ test "first: returns null when nothing matches" {
     const Position = struct { x: f32, y: f32 };
     const Velocity = struct { dx: f32, dy: f32 };
 
-    var world = World.init();
+    var world = World.init(allocator);
     defer world.deinit(allocator);
 
     _ = world.addOwnedEntity(allocator, .{Position{ .x = 1, .y = 2 }});
@@ -370,7 +370,7 @@ test "first: skips despawned entities" {
 
     const Position = struct { x: f32, y: f32 };
 
-    var world = World.init();
+    var world = World.init(allocator);
     defer world.deinit(allocator);
 
     const entity = world.addOwnedEntity(allocator, .{Position{ .x = 1, .y = 2 }});
@@ -389,7 +389,7 @@ test "get: returns pointers to the components the query declares" {
     const Position = struct { x: f32, y: f32 };
     const Velocity = struct { dx: f32, dy: f32 };
 
-    var world = World.init();
+    var world = World.init(allocator);
     defer world.deinit(allocator);
 
     const entity = world.addOwnedEntity(
@@ -408,7 +408,7 @@ test "get: writes through to the stored components" {
 
     const Position = struct { x: f32, y: f32 };
 
-    var world = World.init();
+    var world = World.init(allocator);
     defer world.deinit(allocator);
 
     const entity = world.addOwnedEntity(allocator, .{Position{ .x = 1, .y = 0 }});
@@ -426,7 +426,7 @@ test "get: returns UnknownComponent for an entity outside the query" {
     const Position = struct { x: f32, y: f32 };
     const Velocity = struct { dx: f32, dy: f32 };
 
-    var world = World.init();
+    var world = World.init(allocator);
     defer world.deinit(allocator);
 
     const entity = world.addOwnedEntity(allocator, .{Position{ .x = 1, .y = 2 }});
@@ -442,7 +442,7 @@ test "get: returns InvalidEntity for an out of range entity id" {
 
     const Position = struct { x: f32, y: f32 };
 
-    var world = World.init();
+    var world = World.init(allocator);
     defer world.deinit(allocator);
 
     try std.testing.expectError(
@@ -456,7 +456,7 @@ test "get: returns InvalidEntity for a despawned entity" {
 
     const Position = struct { x: f32, y: f32 };
 
-    var world = World.init();
+    var world = World.init(allocator);
     defer world.deinit(allocator);
 
     const entity = world.addOwnedEntity(allocator, .{Position{ .x = 1, .y = 2 }});

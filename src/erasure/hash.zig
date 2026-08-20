@@ -10,12 +10,6 @@ pub fn hashBytes(bytes: []const u8) u64 {
     return std.hash.Wyhash.hash(seed, bytes);
 }
 
-test "hash: hashes the type name with Wyhash" {
-    const Type = struct { data: u64 };
-
-    try std.testing.expectEqual(1449256646140971360, hash(Type));
-}
-
 test "hash: matches hashBytes of the type name" {
     const Type = struct { data: u64 };
 

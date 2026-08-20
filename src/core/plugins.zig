@@ -1,13 +1,13 @@
 const std = @import("std");
 
-const util = @import("util.zig");
+const util = @import("../utils.zig");
 const World = @import("world.zig").World;
-const DeinitFunction = @import("deinit.zig").DeinitFunction;
-const DestroyFunction = @import("deinit.zig").DestroyFunction;
-const getDeinitFunction = @import("deinit.zig").getDeinitFunction;
-const getDestroyFunction = @import("deinit.zig").getDestroyFunction;
-const resolveParameter = @import("parameter.zig").resolveParameter;
-const Resource = @import("resource.zig").Resource;
+const DeinitFunction = @import("../erasure/deinit.zig").DeinitFunction;
+const DestroyFunction = @import("../erasure/deinit.zig").DestroyFunction;
+const getDeinitFunction = @import("../erasure/deinit.zig").getDeinitFunction;
+const getDestroyFunction = @import("../erasure/deinit.zig").getDestroyFunction;
+const resolveParameter = @import("../erasure/parameter.zig").resolveParameter;
+const Resource = @import("../params/views/resource.zig").Resource;
 
 const PluginEntry = struct {
     plugin: *anyopaque,
@@ -15,14 +15,14 @@ const PluginEntry = struct {
     destroy: DestroyFunction,
 };
 
-pub const PluginRegistry = struct {
+pub const PluginsState = struct {
     plugins: std.ArrayList(PluginEntry) = .empty,
 
-    pub fn init() PluginRegistry {
+    pub fn init() PluginsState {
         return .{};
     }
 
-    pub fn deinit(self: *PluginRegistry, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *PluginsState, allocator: std.mem.Allocator) void {
         var entries = std.mem.reverseIterator(self.plugins.items);
         while (entries.next()) |entry| {
             entry.deinit(allocator, entry.plugin);
@@ -32,7 +32,7 @@ pub const PluginRegistry = struct {
     }
 
     pub fn addPlugin(
-        self: *PluginRegistry,
+        self: *PluginsState,
         allocator: std.mem.Allocator,
         world: *World,
         plugin: anytype,
@@ -55,14 +55,14 @@ pub const PluginRegistry = struct {
             if (build_info.return_type != void) @compileError(build_error_message);
         }
 
-        const stored = allocator.create(T) catch util.panicOom("PluginRegistry.addPlugin");
+        const stored = allocator.create(T) catch util.panicOom("PluginsState.addPlugin");
         stored.* = plugin;
 
         self.plugins.append(allocator, .{
             .plugin = stored,
             .deinit = getDeinitFunction(T),
             .destroy = getDestroyFunction(T),
-        }) catch util.panicOom("PluginRegistry.addPlugin");
+        }) catch util.panicOom("PluginsState.addPlugin");
 
         var arguments: std.meta.ArgsTuple(@TypeOf(T.build)) = undefined;
         inline for (&arguments, 0..) |*argument, index| {
@@ -90,10 +90,10 @@ test "deinit: calls a plugin deinit that takes an allocator" {
         }
     };
 
-    var world = World.init();
+    var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    var registry = PluginRegistry.init();
+    var registry = PluginsState.init();
     registry.addPlugin(allocator, &world, Plugin{
         .buffer = allocator.alloc(u8, 8) catch util.panicOom("test"),
     });
@@ -125,10 +125,10 @@ test "deinit: destroys plugins in reverse registration order" {
         }
     };
 
-    var world = World.init();
+    var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
 
-    var registry = PluginRegistry.init();
+    var registry = PluginsState.init();
     registry.addPlugin(std.testing.allocator, &world, First{});
     registry.addPlugin(std.testing.allocator, &world, Second{});
     registry.deinit(std.testing.allocator);
@@ -148,10 +148,10 @@ test "deinit: calls a plugin deinit that takes no allocator" {
         }
     };
 
-    var world = World.init();
+    var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
 
-    var registry = PluginRegistry.init();
+    var registry = PluginsState.init();
 
     registry.addPlugin(std.testing.allocator, &world, Plugin{});
     registry.deinit(std.testing.allocator);
@@ -164,10 +164,10 @@ test "addPlugin: stores the plugin the caller passed" {
         pub fn build(_: *@This(), _: std.mem.Allocator) void {}
     };
 
-    var world = World.init();
+    var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
 
-    var registry = PluginRegistry.init();
+    var registry = PluginsState.init();
     defer registry.deinit(std.testing.allocator);
 
     registry.addPlugin(std.testing.allocator, &world, Plugin{});
@@ -183,10 +183,10 @@ test "addPlugin: keeps the field values the caller set" {
         pub fn build(_: *@This(), _: std.mem.Allocator) void {}
     };
 
-    var world = World.init();
+    var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
 
-    var registry = PluginRegistry.init();
+    var registry = PluginsState.init();
     defer registry.deinit(std.testing.allocator);
 
     registry.addPlugin(std.testing.allocator, &world, Plugin{ .scale = 2.5, .label = "configured" });
@@ -207,10 +207,10 @@ test "addPlugin: keeps a value the caller built with an allocator" {
         pub fn build(_: *@This(), _: std.mem.Allocator) void {}
     };
 
-    var world = World.init();
+    var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
 
-    var registry = PluginRegistry.init();
+    var registry = PluginsState.init();
     defer registry.deinit(std.testing.allocator);
 
     registry.addPlugin(std.testing.allocator, &world, Plugin.init(std.testing.allocator));
@@ -231,10 +231,10 @@ test "addPlugin: calls a build that takes only the plugin" {
         }
     };
 
-    var world = World.init();
+    var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
 
-    var registry = PluginRegistry.init();
+    var registry = PluginsState.init();
     defer registry.deinit(std.testing.allocator);
 
     registry.addPlugin(std.testing.allocator, &world, Plugin{});
@@ -258,10 +258,10 @@ test "addPlugin: resolves a query parameter for build" {
         }
     };
 
-    var world = World.init();
+    var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
 
-    var registry = PluginRegistry.init();
+    var registry = PluginsState.init();
     defer registry.deinit(std.testing.allocator);
 
     registry.addPlugin(std.testing.allocator, &world, Plugin{});
@@ -283,12 +283,12 @@ test "addPlugin: resolves a resource parameter for build" {
         }
     };
 
-    var world = World.init();
+    var world = World.init(allocator);
     defer world.deinit(allocator);
 
     world.addOwnedResource(allocator, Config, .{ .scale = 2.5 });
 
-    var registry = PluginRegistry.init();
+    var registry = PluginsState.init();
     defer registry.deinit(allocator);
 
     registry.addPlugin(allocator, &world, Plugin{});
@@ -308,10 +308,10 @@ test "addPlugin: passes the caller's plugin value to build" {
         }
     };
 
-    var world = World.init();
+    var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
 
-    var registry = PluginRegistry.init();
+    var registry = PluginsState.init();
     defer registry.deinit(std.testing.allocator);
 
     registry.addPlugin(std.testing.allocator, &world, Plugin{ .scale = 2.5 });
@@ -337,10 +337,10 @@ test "addPlugin: resolves a parameter declaring fromWorld for build" {
         }
     };
 
-    var world = World.init();
+    var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
 
-    var registry = PluginRegistry.init();
+    var registry = PluginsState.init();
     defer registry.deinit(std.testing.allocator);
 
     registry.addPlugin(std.testing.allocator, &world, Plugin{});
@@ -353,10 +353,10 @@ test "addPlugin: stores a plugin that declares no deinit" {
         pub fn build(_: *@This(), _: std.mem.Allocator) void {}
     };
 
-    var world = World.init();
+    var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
 
-    var registry = PluginRegistry.init();
+    var registry = PluginsState.init();
     defer registry.deinit(std.testing.allocator);
 
     registry.addPlugin(std.testing.allocator, &world, Plugin{});
@@ -376,10 +376,10 @@ test "addPlugin: adds the same plugin type more than once" {
         }
     };
 
-    var world = World.init();
+    var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
 
-    var registry = PluginRegistry.init();
+    var registry = PluginsState.init();
     defer registry.deinit(std.testing.allocator);
 
     registry.addPlugin(std.testing.allocator, &world, Plugin{ .tag = 'a' });

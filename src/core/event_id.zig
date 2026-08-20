@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const hash = @import("hash.zig").hash;
+const hash = @import("../erasure/hash.zig").hash;
 
 pub const EventId = struct {
     event: u64,
@@ -10,16 +10,6 @@ pub const EventId = struct {
         return .{ .event = hash(T), .subject = null };
     }
 };
-
-pub fn Event(comptime T: type) type {
-    return struct {
-        value: *const T,
-
-        pub fn fromEvent(payload: *const anyopaque) @This() {
-            return .{ .value = @ptrCast(@alignCast(payload)) };
-        }
-    };
-}
 
 test "EventId: does not collide with the same event carrying a subject" {
     const allocator = std.testing.allocator;

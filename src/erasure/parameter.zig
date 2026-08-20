@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const World = @import("world.zig").World;
+const World = @import("../core/world.zig").World;
 
 pub fn resolveParameter(allocator: std.mem.Allocator, world: *World, comptime Parameter: type) Parameter {
     if (Parameter == std.mem.Allocator) {
@@ -36,7 +36,7 @@ pub fn resolveObserverParameter(
 }
 
 test "resolveParameter: returns the allocator for an Allocator parameter" {
-    var world = World.init();
+    var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
 
     const resolved = resolveParameter(std.testing.allocator, &world, std.mem.Allocator);
@@ -54,7 +54,7 @@ test "resolveParameter: hands the allocator and world to fromWorld" {
         }
     };
 
-    var world = World.init();
+    var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
 
     const resolved = resolveParameter(std.testing.allocator, &world, Parameter);
@@ -73,7 +73,7 @@ test "resolveObserverParameter: hands the payload to fromEvent" {
         }
     };
 
-    var world = World.init();
+    var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
     const payload: u8 = 42;
 
@@ -91,7 +91,7 @@ test "resolveObserverParameter: falls back to fromWorld when fromEvent is absent
         }
     };
 
-    var world = World.init();
+    var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
     const payload: u8 = 0;
 
@@ -113,7 +113,7 @@ test "resolveObserverParameter: prefers fromEvent over fromWorld" {
         }
     };
 
-    var world = World.init();
+    var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
     const payload: u8 = 0;
 
@@ -123,7 +123,7 @@ test "resolveObserverParameter: prefers fromEvent over fromWorld" {
 }
 
 test "resolveObserverParameter: returns the allocator for an Allocator parameter" {
-    var world = World.init();
+    var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
     const payload: u8 = 0;
 

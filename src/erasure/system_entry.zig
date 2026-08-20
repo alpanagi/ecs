@@ -1,7 +1,7 @@
 const std = @import("std");
 
-const World = @import("world.zig").World;
-const Event = @import("event.zig").Event;
+const World = @import("../core/world.zig").World;
+const Event = @import("../params/views/event.zig").Event;
 const resolveParameter = @import("parameter.zig").resolveParameter;
 const resolveObserverParameter = @import("parameter.zig").resolveObserverParameter;
 
@@ -191,7 +191,7 @@ test "SystemEntry.run: calls a plain function entry" {
         }
     }.call;
 
-    var world = World.init();
+    var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
 
     buildSystemEntry(system, null).run(std.testing.allocator, &world);
@@ -208,7 +208,7 @@ test "SystemEntry.run: calls a plugin entry through the bound plugin" {
         }
     };
 
-    var world = World.init();
+    var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
 
     var plugin = Plugin{};
@@ -231,7 +231,7 @@ test "ObserverEntry.run: hands the payload to a plain function entry" {
         }
     }.call;
 
-    var world = World.init();
+    var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
 
     const damage = Damage{ .amount = 7 };
@@ -250,7 +250,7 @@ test "ObserverEntry.run: hands the payload to a plugin entry" {
         }
     };
 
-    var world = World.init();
+    var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
 
     var plugin = Plugin{};
@@ -297,7 +297,7 @@ test "buildSystemEntry: resolves the parameters the system declares" {
         }
     }.call;
 
-    var world = World.init();
+    var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
 
     buildSystemEntry(system, null).run(std.testing.allocator, &world);
@@ -315,7 +315,7 @@ test "buildSystemEntry: runs a system that declares no parameters" {
         }
     }.call;
 
-    var world = World.init();
+    var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
 
     buildSystemEntry(system, null).run(std.testing.allocator, &world);
@@ -334,7 +334,7 @@ test "buildSystemEntry: gives a plugin system its receiver before other paramete
         }
     };
 
-    var world = World.init();
+    var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
 
     var plugin = Plugin{};
@@ -384,7 +384,7 @@ test "buildObserverEntry: resolves parameters beyond the event" {
         }
     }.call;
 
-    var world = World.init();
+    var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
 
     buildObserverEntry(observer, null).run(std.testing.allocator, &world, &Damage{ .amount = 5 });

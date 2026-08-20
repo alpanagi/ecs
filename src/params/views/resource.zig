@@ -1,7 +1,7 @@
 const std = @import("std");
 
-const World = @import("world.zig").World;
-const panic = @import("util.zig").panic;
+const World = @import("../../core/world.zig").World;
+const panic = @import("../../utils.zig").panic;
 
 pub fn Resource(comptime T: type) type {
     return struct {
@@ -22,7 +22,7 @@ test "fromWorld: points at the resource stored in the world" {
 
     const ClearColor = struct { r: f32, g: f32, b: f32 };
 
-    var world = World.init();
+    var world = World.init(allocator);
     defer world.deinit(allocator);
 
     world.addOwnedResource(allocator, ClearColor, .{ .r = 0.5, .g = 0, .b = 0 });
@@ -38,7 +38,7 @@ test "fromWorld: writes through to the stored resource" {
 
     const Counter = struct { hits: u32 };
 
-    var world = World.init();
+    var world = World.init(allocator);
     defer world.deinit(allocator);
 
     world.addOwnedResource(allocator, Counter, .{ .hits = 0 });
@@ -54,7 +54,7 @@ test "fromWorld: sees a resource replaced after it was read" {
 
     const Config = struct { scale: f32 };
 
-    var world = World.init();
+    var world = World.init(allocator);
     defer world.deinit(allocator);
 
     world.addOwnedResource(allocator, Config, .{ .scale = 1 });

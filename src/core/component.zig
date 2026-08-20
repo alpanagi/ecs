@@ -1,8 +1,8 @@
 const std = @import("std");
 
-const DeinitFunction = @import("deinit.zig").DeinitFunction;
-const getDeinitFunction = @import("deinit.zig").getDeinitFunction;
-const hash = @import("hash.zig").hash;
+const DeinitFunction = @import("../erasure/deinit.zig").DeinitFunction;
+const getDeinitFunction = @import("../erasure/deinit.zig").getDeinitFunction;
+const hash = @import("../erasure/hash.zig").hash;
 
 pub fn componentId(comptime T: type) u64 {
     return hash(T);
