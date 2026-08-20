@@ -325,11 +325,11 @@ test "addObserver: defers registration until the queue is flushed" {
 
     Commands.fromWorld(allocator, &world).addObserver(EventId.from(Damage), observer, null);
 
-    world.trigger(allocator, Damage{ .amount = 3 });
+    world.dispatchOwnedEvent(allocator, Damage{ .amount = 3 });
     try std.testing.expectEqual(0, State.seen);
 
     world.runSystems(allocator);
-    world.trigger(allocator, Damage{ .amount = 5 });
+    world.dispatchOwnedEvent(allocator, Damage{ .amount = 5 });
 
     try std.testing.expectEqual(5, State.seen);
 }

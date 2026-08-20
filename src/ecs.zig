@@ -7,6 +7,8 @@ pub const Resource = @import("resource.zig").Resource;
 pub const Event = @import("event.zig").Event;
 pub const EventId = @import("event.zig").EventId;
 pub const componentId = @import("component.zig").componentId;
+pub const DeinitFunction = @import("deinit.zig").DeinitFunction;
+pub const getDeinitFunction = @import("deinit.zig").getDeinitFunction;
 
 pub const events = struct {
     pub const component = @import("lifecycle.zig").component;

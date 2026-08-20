@@ -6,6 +6,7 @@ const ComponentDescriptor = @import("component.zig").ComponentDescriptor;
 const ComponentPointers = @import("component.zig").ComponentPointers;
 const componentId = @import("component.zig").componentId;
 const componentTypes = @import("component.zig").componentTypes;
+const getDeinitFunction = @import("deinit.zig").getDeinitFunction;
 const Entity = @import("entity.zig").Entity;
 const Error = @import("error.zig").Error;
 const Event = @import("event.zig").Event;
@@ -42,8 +43,8 @@ pub const Observers = struct {
         return .{ .world = world, .allocator = allocator };
     }
 
-    pub fn trigger(self: Observers, event: anytype) void {
-        self.world.trigger(self.allocator, event);
+    pub fn dispatchOwnedEvent(self: Observers, event: anytype) void {
+        self.world.dispatchOwnedEvent(self.allocator, event);
     }
 };
 
@@ -242,8 +243,10 @@ pub const World = struct {
         return getComponents(&self.archetypes.items[archetype_id], descriptor.row, components);
     }
 
-    pub fn trigger(self: *World, allocator: std.mem.Allocator, event: anytype) void {
-        self.system_registry.dispatch(allocator, self, EventId.from(@TypeOf(event)), &event);
+    pub fn dispatchOwnedEvent(self: *World, allocator: std.mem.Allocator, event: anytype) void {
+        var owned = event;
+        self.system_registry.dispatch(allocator, self, EventId.from(@TypeOf(event)), &owned);
+        getDeinitFunction(@TypeOf(event))(allocator, &owned);
     }
 
     pub fn runSystems(self: *World, allocator: std.mem.Allocator) void {
@@ -1062,7 +1065,7 @@ test "getEntity: returns UnknownComponent for a marker the entity lacks" {
     );
 }
 
-test "trigger: runs an observer registered through addObserver" {
+test "dispatchOwnedEvent: runs an observer registered through addObserver" {
     const Damage = struct { amount: u32 };
     const State = struct {
         var seen: u32 = 0;
@@ -1077,12 +1080,12 @@ test "trigger: runs an observer registered through addObserver" {
     defer world.deinit(std.testing.allocator);
 
     world.addObserver(std.testing.allocator, EventId.from(Damage), onDamage, null);
-    world.trigger(std.testing.allocator, Damage{ .amount = 7 });
+    world.dispatchOwnedEvent(std.testing.allocator, Damage{ .amount = 7 });
 
     try std.testing.expectEqual(7, State.seen);
 }
 
-test "trigger: dispatches synchronously through Observers" {
+test "dispatchOwnedEvent: dispatches synchronously through Observers" {
     const allocator = std.testing.allocator;
 
     const Damage = struct { amount: u32 };
@@ -1101,7 +1104,7 @@ test "trigger: dispatches synchronously through Observers" {
     }.call;
     const system = struct {
         fn call(observers: Observers) void {
-            observers.trigger(Damage{ .amount = 7 });
+            observers.dispatchOwnedEvent(Damage{ .amount = 7 });
             State.ran_before_system_returned = State.seen == 7;
         }
     }.call;
@@ -1116,6 +1119,154 @@ test "trigger: dispatches synchronously through Observers" {
 
     try std.testing.expectEqual(7, State.seen);
     try std.testing.expect(State.ran_before_system_returned);
+}
+
+test "dispatchOwnedEvent: deinits the event once after every observer has seen it" {
+    const allocator = std.testing.allocator;
+
+    const State = struct {
+        var deinits: usize = 0;
+        var first: usize = 0;
+        var second: usize = 0;
+    };
+    const Message = struct {
+        text: []u8,
+
+        pub fn deinit(self: *@This(), event_allocator: std.mem.Allocator) void {
+            State.deinits += 1;
+            event_allocator.free(self.text);
+        }
+    };
+    State.deinits = 0;
+    State.first = 0;
+    State.second = 0;
+
+    const onFirst = struct {
+        fn call(event: Event(Message)) void {
+            State.first = event.value.text.len;
+        }
+    }.call;
+    const onSecond = struct {
+        fn call(event: Event(Message)) void {
+            State.second = event.value.text.len;
+        }
+    }.call;
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    world.addObserver(allocator, EventId.from(Message), onFirst, null);
+    world.addObserver(allocator, EventId.from(Message), onSecond, null);
+
+    world.dispatchOwnedEvent(allocator, Message{ .text = try allocator.alloc(u8, 4) });
+
+    try std.testing.expectEqual(4, State.first);
+    try std.testing.expectEqual(4, State.second);
+    try std.testing.expectEqual(1, State.deinits);
+}
+
+test "dispatchOwnedEvent: deinits an event that no observer is listening for" {
+    const allocator = std.testing.allocator;
+
+    const State = struct {
+        var deinits: usize = 0;
+    };
+    const Message = struct {
+        text: []u8,
+
+        pub fn deinit(self: *@This(), event_allocator: std.mem.Allocator) void {
+            State.deinits += 1;
+            event_allocator.free(self.text);
+        }
+    };
+    State.deinits = 0;
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    world.dispatchOwnedEvent(allocator, Message{ .text = try allocator.alloc(u8, 4) });
+
+    try std.testing.expectEqual(1, State.deinits);
+}
+
+test "dispatchOwnedEvent: leaves an event without deinit untouched" {
+    const allocator = std.testing.allocator;
+
+    const Message = struct { text: []u8 };
+
+    const State = struct {
+        var seen: usize = 0;
+    };
+    State.seen = 0;
+
+    const onMessage = struct {
+        fn call(event: Event(Message)) void {
+            State.seen = event.value.text.len;
+        }
+    }.call;
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    world.addObserver(allocator, EventId.from(Message), onMessage, null);
+
+    const text = try allocator.alloc(u8, 4);
+    defer allocator.free(text);
+
+    world.dispatchOwnedEvent(allocator, Message{ .text = text });
+
+    try std.testing.expectEqual(4, State.seen);
+}
+
+test "dispatchOwnedEvent: deinits both events when an observer dispatches another" {
+    const allocator = std.testing.allocator;
+
+    const State = struct {
+        var order: [2]u8 = .{ 0, 0 };
+        var deinits: usize = 0;
+    };
+    State.order = .{ 0, 0 };
+    State.deinits = 0;
+
+    const Inner = struct {
+        text: []u8,
+
+        pub fn deinit(self: *@This(), event_allocator: std.mem.Allocator) void {
+            State.order[State.deinits] = 'i';
+            State.deinits += 1;
+            event_allocator.free(self.text);
+        }
+    };
+    const Outer = struct {
+        text: []u8,
+
+        pub fn deinit(self: *@This(), event_allocator: std.mem.Allocator) void {
+            State.order[State.deinits] = 'o';
+            State.deinits += 1;
+            event_allocator.free(self.text);
+        }
+    };
+
+    const onOuter = struct {
+        fn call(observers: Observers, _: Event(Outer)) void {
+            const text = observers.allocator.alloc(u8, 8) catch panicOom("onOuter");
+            observers.dispatchOwnedEvent(Inner{ .text = text });
+        }
+    }.call;
+    const onInner = struct {
+        fn call(_: Event(Inner)) void {}
+    }.call;
+
+    var world = World.init();
+    defer world.deinit(allocator);
+
+    world.addObserver(allocator, EventId.from(Outer), onOuter, null);
+    world.addObserver(allocator, EventId.from(Inner), onInner, null);
+
+    world.dispatchOwnedEvent(allocator, Outer{ .text = try allocator.alloc(u8, 4) });
+
+    try std.testing.expectEqual(2, State.deinits);
+    try std.testing.expectEqual([2]u8{ 'i', 'o' }, State.order);
 }
 
 test "runSystems: runs a one shot system exactly once" {
@@ -1477,7 +1628,7 @@ test "integration: a plugin system and observer can declare parameters beyond th
 
     world.addOwnedPlugin(allocator, Plugin{});
     world.runSystems(allocator);
-    world.trigger(allocator, Damage{ .amount = 7 });
+    world.dispatchOwnedEvent(allocator, Damage{ .amount = 7 });
 
     const plugin = world.plugin_registry.plugins.items[0];
     const typed: *Plugin = @ptrCast(@alignCast(plugin.plugin));
@@ -1633,7 +1784,7 @@ test "integration: a plugin's build can register an observer through Commands" {
 
     world.addOwnedPlugin(std.testing.allocator, Plugin{});
     world.flushSystemRegistrations(std.testing.allocator);
-    world.trigger(std.testing.allocator, Damage{ .amount = 5 });
+    world.dispatchOwnedEvent(std.testing.allocator, Damage{ .amount = 5 });
 
     const entry = world.system_registry.observers.values()[0].items[0];
     const plugin: *Plugin = @ptrCast(@alignCast(entry.plugin_function.plugin));
@@ -1883,14 +2034,14 @@ test "integration: an observer registering observers for its own event does not 
     world.addObserver(allocator, EventId.from(Damage), Handlers.registrar, null);
     world.addObserver(allocator, EventId.from(Damage), Handlers.bystander, null);
 
-    world.trigger(allocator, Damage{ .amount = 1 });
+    world.dispatchOwnedEvent(allocator, Damage{ .amount = 1 });
     try std.testing.expectEqual(1, State.registrar_calls);
     try std.testing.expectEqual(1, State.bystander_calls);
     try std.testing.expectEqual(0, State.added_calls);
 
     world.runSystems(allocator);
 
-    world.trigger(allocator, Damage{ .amount = 1 });
+    world.dispatchOwnedEvent(allocator, Damage{ .amount = 1 });
     try std.testing.expectEqual(2, State.registrar_calls);
     try std.testing.expectEqual(2, State.bystander_calls);
     try std.testing.expectEqual(observer_count, State.added_calls);
@@ -1932,7 +2083,7 @@ test "integration: a plugin's build can register systems, one-shot systems and o
 
     world.runSystems(allocator);
     world.runSystems(allocator);
-    world.trigger(allocator, Damage{ .amount = 7 });
+    world.dispatchOwnedEvent(allocator, Damage{ .amount = 7 });
 
     const plugin: *Plugin = @ptrCast(@alignCast(world.plugin_registry.plugins.items[0].plugin));
     try std.testing.expectEqual(2, plugin.updates);
@@ -2092,7 +2243,7 @@ test "integration: an unflushed addResource value is freed without being applied
     try std.testing.expectEqual(null, world.getResource(Config));
 }
 
-test "integration: an observer reached through Observers.trigger can queue deferred work" {
+test "integration: an observer reached through Observers.dispatchOwnedEvent can queue deferred work" {
     const allocator = std.testing.allocator;
 
     const Position = struct { x: f32, y: f32 };
@@ -2110,7 +2261,7 @@ test "integration: an observer reached through Observers.trigger can queue defer
     }.call;
     const system = struct {
         fn call(observers: Observers, positions: Query(&.{Position})) void {
-            observers.trigger(Spawned{ .x = 5 });
+            observers.dispatchOwnedEvent(Spawned{ .x = 5 });
             var it = positions.iterator();
             while (it.next()) |_| State.entities_at_trigger += 1;
         }
@@ -2129,7 +2280,7 @@ test "integration: an observer reached through Observers.trigger can queue defer
     try std.testing.expectEqual(1, world.archetypes.items[0].entity_count);
 }
 
-test "integration: an observer reached through Observers.trigger can register another observer" {
+test "integration: an observer reached through Observers.dispatchOwnedEvent can register another observer" {
     const allocator = std.testing.allocator;
 
     const Damage = struct { amount: u32 };
@@ -2157,7 +2308,7 @@ test "integration: an observer reached through Observers.trigger can register an
     };
     const system = struct {
         fn call(observers: Observers) void {
-            observers.trigger(Damage{ .amount = 1 });
+            observers.dispatchOwnedEvent(Damage{ .amount = 1 });
         }
     }.call;
 
