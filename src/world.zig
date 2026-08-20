@@ -37,14 +37,13 @@ pub const Query = @import("query.zig").Query;
 
 pub const Observers = struct {
     world: *World,
-    allocator: std.mem.Allocator,
 
-    pub fn fromWorld(allocator: std.mem.Allocator, world: *World) Observers {
-        return .{ .world = world, .allocator = allocator };
+    pub fn fromWorld(_: std.mem.Allocator, world: *World) Observers {
+        return .{ .world = world };
     }
 
-    pub fn dispatchOwnedEvent(self: Observers, event: anytype) void {
-        self.world.dispatchOwnedEvent(self.allocator, event);
+    pub fn dispatchOwnedEvent(self: Observers, allocator: std.mem.Allocator, event: anytype) void {
+        self.world.dispatchOwnedEvent(allocator, event);
     }
 };
 
@@ -1104,7 +1103,7 @@ test "dispatchOwnedEvent: dispatches synchronously through Observers" {
     }.call;
     const system = struct {
         fn call(observers: Observers) void {
-            observers.dispatchOwnedEvent(Damage{ .amount = 7 });
+            observers.dispatchOwnedEvent(allocator, Damage{ .amount = 7 });
             State.ran_before_system_returned = State.seen == 7;
         }
     }.call;
@@ -1248,9 +1247,9 @@ test "dispatchOwnedEvent: deinits both events when an observer dispatches anothe
     };
 
     const onOuter = struct {
-        fn call(observers: Observers, _: Event(Outer)) void {
-            const text = observers.allocator.alloc(u8, 8) catch panicOom("onOuter");
-            observers.dispatchOwnedEvent(Inner{ .text = text });
+        fn call(observers: Observers, inner: std.mem.Allocator, _: Event(Outer)) void {
+            const text = inner.alloc(u8, 8) catch panicOom("onOuter");
+            observers.dispatchOwnedEvent(inner, Inner{ .text = text });
         }
     }.call;
     const onInner = struct {
@@ -1293,8 +1292,8 @@ test "runSystems: flushes commands queued by a system after each group" {
     const Position = struct { x: f32, y: f32 };
 
     const system = struct {
-        fn call(commands: Commands) void {
-            commands.spawnOwned(.{Position{ .x = 1, .y = 2 }});
+        fn call(commands: Commands, allocator: std.mem.Allocator) void {
+            commands.spawnOwned(allocator, .{Position{ .x = 1, .y = 2 }});
         }
     }.call;
 
@@ -1325,7 +1324,7 @@ test "flushSystemRegistrations: applies queued registrations without running a f
     var world = World.init();
     defer world.deinit(allocator);
 
-    Commands.fromWorld(allocator, &world).addSystem("update", system, null);
+    Commands.fromWorld(allocator, &world).addSystem(allocator, "update", system, null);
     try std.testing.expectEqual(0, world.system_registry.groups.count());
 
     world.flushSystemRegistrations(allocator);
@@ -1602,9 +1601,9 @@ test "integration: a plugin system and observer can declare parameters beyond th
             return .{};
         }
 
-        pub fn build(self: *@This(), commands: Commands) void {
-            commands.addSystem("update", move, self);
-            commands.addObserver(EventId.from(Damage), onDamage, self);
+        pub fn build(self: *@This(), commands: Commands, inner: std.mem.Allocator) void {
+            commands.addSystem(inner, "update", move, self);
+            commands.addObserver(inner, EventId.from(Damage), onDamage, self);
         }
 
         fn move(self: *@This(), query: Query(&.{Position})) void {
@@ -1690,8 +1689,8 @@ test "integration: a plugin's build can register systems" {
             return .{};
         }
 
-        pub fn build(self: *@This(), commands: Commands) void {
-            commands.addSystem("update", system, self);
+        pub fn build(self: *@This(), commands: Commands, allocator: std.mem.Allocator) void {
+            commands.addSystem(allocator, "update", system, self);
         }
 
         fn system(self: *@This(), _: std.mem.Allocator) void {
@@ -1741,9 +1740,9 @@ test "integration: plugin systems share state across runs" {
             return .{};
         }
 
-        pub fn build(self: *@This(), commands: Commands) void {
-            commands.addSystem("update", increment, self);
-            commands.addSystem("observe", increment, self);
+        pub fn build(self: *@This(), commands: Commands, allocator: std.mem.Allocator) void {
+            commands.addSystem(allocator, "update", increment, self);
+            commands.addSystem(allocator, "observe", increment, self);
         }
 
         fn increment(self: *@This(), _: std.mem.Allocator) void {
@@ -1770,8 +1769,8 @@ test "integration: a plugin's build can register an observer through Commands" {
     const Plugin = struct {
         total: u32 = 0,
 
-        pub fn build(self: *@This(), commands: Commands) void {
-            commands.addObserver(EventId.from(Damage), onDamage, self);
+        pub fn build(self: *@This(), commands: Commands, allocator: std.mem.Allocator) void {
+            commands.addObserver(allocator, EventId.from(Damage), onDamage, self);
         }
 
         fn onDamage(self: *@This(), event: Event(Damage)) void {
@@ -1795,8 +1794,8 @@ test "integration: a plugin's build registers a one shot system" {
     const Plugin = struct {
         calls: usize = 0,
 
-        pub fn build(self: *@This(), commands: Commands) void {
-            commands.addOneShotSystem(tick, self);
+        pub fn build(self: *@This(), commands: Commands, allocator: std.mem.Allocator) void {
+            commands.addOneShotSystem(allocator, tick, self);
         }
 
         fn tick(self: *@This(), _: std.mem.Allocator) void {
@@ -1817,9 +1816,9 @@ test "integration: a plugin's build registers a one shot system" {
 test "integration: a plugin's build can register a resource, read later by a system" {
     const ClearColor = struct { r: f32, g: f32, b: f32 };
     const ConfigPlugin = struct {
-        pub fn build(_: *@This(), commands: Commands) void {
-            commands.addOwnedResource(ClearColor, .{ .r = 1, .g = 1, .b = 1 });
-            commands.addSystem("update", fadeToBlack, null);
+        pub fn build(_: *@This(), commands: Commands, allocator: std.mem.Allocator) void {
+            commands.addOwnedResource(allocator, ClearColor, .{ .r = 1, .g = 1, .b = 1 });
+            commands.addSystem(allocator, "update", fadeToBlack, null);
         }
 
         fn fadeToBlack(color: Resource(ClearColor)) void {
@@ -1854,7 +1853,7 @@ test "integration: a spawn through Commands triggers Added at the flush" {
     defer world.deinit(std.testing.allocator);
 
     world.addObserver(std.testing.allocator, component_events.added(Position), onPositionAdded, null);
-    Commands.fromWorld(std.testing.allocator, &world).spawnOwned(.{Position{ .x = 1, .y = 2 }});
+    Commands.fromWorld(std.testing.allocator, &world).spawnOwned(std.testing.allocator, .{Position{ .x = 1, .y = 2 }});
     try std.testing.expectEqual(null, State.added_entity);
 
     world.runSystems(std.testing.allocator);
@@ -1887,7 +1886,7 @@ test "integration: a system registered through Commands into an existing group f
             State.registrar_calls += 1;
             if (State.registered) return;
             State.registered = true;
-            for (0..system_count) |_| commands.addSystem("update", added, null);
+            for (0..system_count) |_| commands.addSystem(allocator, "update", added, null);
         }
 
         fn bystander() void {
@@ -1935,7 +1934,7 @@ test "integration: a system registered through Commands into a new group first r
             for (0..group_count) |index| {
                 var buffer: [16]u8 = undefined;
                 const group = std.fmt.bufPrint(&buffer, "group{d}", .{index}) catch unreachable;
-                commands.addSystem(group, added, null);
+                commands.addSystem(allocator, group, added, null);
             }
         }
     };
@@ -1971,7 +1970,7 @@ test "integration: a one-shot system registered through Commands runs on the nex
 
         fn first(commands: Commands) void {
             State.first_calls += 1;
-            commands.addOneShotSystem(second, null);
+            commands.addOneShotSystem(allocator, second, null);
         }
     };
 
@@ -2020,7 +2019,7 @@ test "integration: an observer registering observers for its own event does not 
             State.registrar_calls += 1;
             if (State.registered) return;
             State.registered = true;
-            for (0..observer_count) |_| commands.addObserver(EventId.from(Damage), added, null);
+            for (0..observer_count) |_| commands.addObserver(allocator, EventId.from(Damage), added, null);
         }
 
         fn bystander(_: Event(Damage)) void {
@@ -2057,10 +2056,10 @@ test "integration: a plugin's build can register systems, one-shot systems and o
         setups: usize = 0,
         damage_seen: u32 = 0,
 
-        pub fn build(self: *@This(), commands: Commands) void {
-            commands.addSystem("update", update, self);
-            commands.addOneShotSystem(setup, self);
-            commands.addObserver(EventId.from(Damage), onDamage, self);
+        pub fn build(self: *@This(), commands: Commands, inner: std.mem.Allocator) void {
+            commands.addSystem(inner, "update", update, self);
+            commands.addOneShotSystem(inner, setup, self);
+            commands.addObserver(inner, EventId.from(Damage), onDamage, self);
         }
 
         fn update(self: *@This()) void {
@@ -2099,15 +2098,15 @@ test "integration: a plugin system registering a plugin system through Commands 
         registrar_calls: usize = 0,
         added_calls: usize = 0,
 
-        pub fn build(self: *@This(), commands: Commands) void {
-            commands.addSystem("update", registrar, self);
+        pub fn build(self: *@This(), commands: Commands, inner: std.mem.Allocator) void {
+            commands.addSystem(inner, "update", registrar, self);
         }
 
         fn registrar(self: *@This(), commands: Commands) void {
             self.registrar_calls += 1;
             if (self.registered) return;
             self.registered = true;
-            commands.addSystem("late", added, self);
+            commands.addSystem(allocator, "late", added, self);
         }
 
         fn added(self: *@This()) void {
@@ -2142,7 +2141,7 @@ test "integration: a resource removed through Commands stays readable for the re
 
     const Systems = struct {
         fn remover(commands: Commands, config: Resource(Config)) void {
-            commands.removeResource(Config);
+            commands.removeResource(allocator, Config);
             config.value.scale += 1;
         }
 
@@ -2176,7 +2175,7 @@ test "integration: a resource added through Commands is visible to the next grou
 
     const Systems = struct {
         fn producer(commands: Commands) void {
-            commands.addOwnedResource(Config, .{ .scale = 3 });
+            commands.addOwnedResource(allocator, Config, .{ .scale = 3 });
         }
 
         fn consumer(config: Resource(Config)) void {
@@ -2206,9 +2205,9 @@ test "integration: a plugin's build can register a resource through Commands" {
     State.seen = 0;
 
     const Plugin = struct {
-        pub fn build(_: *@This(), commands: Commands) void {
-            commands.addOwnedResource(Config, .{ .scale = 4 });
-            commands.addSystem("update", read, null);
+        pub fn build(_: *@This(), commands: Commands, inner: std.mem.Allocator) void {
+            commands.addOwnedResource(inner, Config, .{ .scale = 4 });
+            commands.addSystem(inner, "update", read, null);
         }
 
         fn read(config: Resource(Config)) void {
@@ -2235,7 +2234,7 @@ test "integration: an unflushed addResource value is freed without being applied
     var world = World.init();
     defer world.deinit(allocator);
 
-    Commands.fromWorld(allocator, &world).addOwnedResource(Config, .{ .scale = 1 });
+    Commands.fromWorld(allocator, &world).addOwnedResource(allocator, Config, .{ .scale = 1 });
 
     world.command_queue.deinit(allocator);
     world.command_queue = CommandQueue.init();
@@ -2256,12 +2255,12 @@ test "integration: an observer reached through Observers.dispatchOwnedEvent can 
 
     const onSpawned = struct {
         fn call(commands: Commands, event: Event(Spawned)) void {
-            commands.spawnOwned(.{Position{ .x = event.value.x, .y = 0 }});
+            commands.spawnOwned(allocator, .{Position{ .x = event.value.x, .y = 0 }});
         }
     }.call;
     const system = struct {
         fn call(observers: Observers, positions: Query(&.{Position})) void {
-            observers.dispatchOwnedEvent(Spawned{ .x = 5 });
+            observers.dispatchOwnedEvent(allocator, Spawned{ .x = 5 });
             var it = positions.iterator();
             while (it.next()) |_| State.entities_at_trigger += 1;
         }
@@ -2303,12 +2302,12 @@ test "integration: an observer reached through Observers.dispatchOwnedEvent can 
             State.registrar_calls += 1;
             if (State.registered) return;
             State.registered = true;
-            for (0..16) |_| commands.addObserver(EventId.from(Damage), added, null);
+            for (0..16) |_| commands.addObserver(allocator, EventId.from(Damage), added, null);
         }
     };
     const system = struct {
         fn call(observers: Observers) void {
-            observers.dispatchOwnedEvent(Damage{ .amount = 1 });
+            observers.dispatchOwnedEvent(allocator, Damage{ .amount = 1 });
         }
     }.call;
 
@@ -2374,9 +2373,9 @@ test "integration: a one-shot system sees resources its plugin's build created t
     State.seen = null;
 
     const Plugin = struct {
-        pub fn build(_: *@This(), commands: Commands) void {
-            commands.addOwnedResource(Config, .{ .scale = 2 });
-            commands.addOneShotSystem(startup, null);
+        pub fn build(_: *@This(), commands: Commands, inner: std.mem.Allocator) void {
+            commands.addOwnedResource(inner, Config, .{ .scale = 2 });
+            commands.addOneShotSystem(inner, startup, null);
         }
 
         fn startup(config: Resource(Config)) void {
@@ -2404,13 +2403,13 @@ test "integration: a one-shot system sees resources another plugin's build creat
     State.seen = null;
 
     const Provider = struct {
-        pub fn build(_: *@This(), commands: Commands) void {
-            commands.addOwnedResource(Config, .{ .scale = 3 });
+        pub fn build(_: *@This(), commands: Commands, inner: std.mem.Allocator) void {
+            commands.addOwnedResource(inner, Config, .{ .scale = 3 });
         }
     };
     const Consumer = struct {
-        pub fn build(_: *@This(), commands: Commands) void {
-            commands.addOneShotSystem(startup, null);
+        pub fn build(_: *@This(), commands: Commands, inner: std.mem.Allocator) void {
+            commands.addOneShotSystem(inner, startup, null);
         }
 
         fn startup(config: Resource(Config)) void {
@@ -2440,9 +2439,9 @@ test "integration: a one-shot system sees entities its plugin's build spawned th
     State.seen = 0;
 
     const Plugin = struct {
-        pub fn build(_: *@This(), commands: Commands) void {
-            commands.spawnOwned(.{Position{ .x = 1, .y = 1 }});
-            commands.addOneShotSystem(startup, null);
+        pub fn build(_: *@This(), commands: Commands, inner: std.mem.Allocator) void {
+            commands.spawnOwned(inner, .{Position{ .x = 1, .y = 1 }});
+            commands.addOneShotSystem(inner, startup, null);
         }
 
         fn startup(positions: Query(&.{Position})) void {
@@ -2505,7 +2504,7 @@ test "integration: a resource added through Commands fires Added at the flush" {
     defer world.deinit(allocator);
 
     world.addObserver(allocator, resource_events.added(Config), onAdded, null);
-    Commands.fromWorld(allocator, &world).addOwnedResource(Config, .{ .scale = 1 });
+    Commands.fromWorld(allocator, &world).addOwnedResource(allocator, Config, .{ .scale = 1 });
     try std.testing.expectEqual(0, State.calls);
 
     world.command_queue.flush(allocator, &world);
@@ -2535,7 +2534,7 @@ test "integration: a resource removed through Commands fires Destroying at the f
     world.addObserver(allocator, resource_events.destroying(Config), onDestroying, null);
     world.addOwnedResource(allocator, Config, .{ .scale = 1 });
 
-    Commands.fromWorld(allocator, &world).removeResource(Config);
+    Commands.fromWorld(allocator, &world).removeResource(allocator, Config);
     try std.testing.expectEqual(0, State.calls);
 
     world.command_queue.flush(allocator, &world);

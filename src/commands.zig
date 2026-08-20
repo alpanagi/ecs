@@ -16,39 +16,44 @@ const hashBytes = @import("hash.zig").hashBytes;
 
 pub const Commands = struct {
     world: *World,
-    allocator: std.mem.Allocator,
 
-    pub fn fromWorld(allocator: std.mem.Allocator, world: *World) Commands {
-        return .{ .world = world, .allocator = allocator };
+    pub fn fromWorld(_: std.mem.Allocator, world: *World) Commands {
+        return .{ .world = world };
     }
 
-    pub fn spawnOwned(self: Commands, components: anytype) void {
+    pub fn spawnOwned(self: Commands, allocator: std.mem.Allocator, components: anytype) void {
         const Values = @Tuple(componentTypes(@TypeOf(components)));
         const values: Values = components;
 
-        self.world.command_queue.spawn(self.allocator, values, spawnFunctions(Values));
+        self.world.command_queue.spawn(allocator, values, spawnFunctions(Values));
     }
 
-    pub fn despawn(self: Commands, entity: Entity) void {
-        self.world.command_queue.despawn(self.allocator, entity, World.removeEntity);
+    pub fn despawn(self: Commands, allocator: std.mem.Allocator, entity: Entity) void {
+        self.world.command_queue.despawn(allocator, entity, World.removeEntity);
     }
 
-    pub fn addOwnedResource(self: Commands, comptime T: type, value: T) void {
-        self.world.command_queue.addResource(self.allocator, value, addResourceFunctions(T));
+    pub fn addOwnedResource(
+        self: Commands,
+        allocator: std.mem.Allocator,
+        comptime T: type,
+        value: T,
+    ) void {
+        self.world.command_queue.addResource(allocator, value, addResourceFunctions(T));
     }
 
-    pub fn removeResource(self: Commands, comptime T: type) void {
-        self.world.command_queue.removeResource(self.allocator, removeResourceFunction(T));
+    pub fn removeResource(self: Commands, allocator: std.mem.Allocator, comptime T: type) void {
+        self.world.command_queue.removeResource(allocator, removeResourceFunction(T));
     }
 
     pub fn addSystem(
         self: Commands,
+        allocator: std.mem.Allocator,
         group: []const u8,
         comptime function: anytype,
         plugin: anytype,
     ) void {
         self.world.registration_queue.addSystem(
-            self.allocator,
+            allocator,
             hashBytes(group),
             buildSystemEntry(function, plugin),
         );
@@ -56,23 +61,25 @@ pub const Commands = struct {
 
     pub fn addOneShotSystem(
         self: Commands,
+        allocator: std.mem.Allocator,
         comptime function: anytype,
         plugin: anytype,
     ) void {
         self.world.registration_queue.addOneShotSystem(
-            self.allocator,
+            allocator,
             buildSystemEntry(function, plugin),
         );
     }
 
     pub fn addObserver(
         self: Commands,
+        allocator: std.mem.Allocator,
         event_id: EventId,
         comptime function: anytype,
         plugin: anytype,
     ) void {
         self.world.registration_queue.addObserver(
-            self.allocator,
+            allocator,
             event_id,
             buildObserverEntry(function, plugin),
         );
@@ -128,7 +135,7 @@ test "spawnOwned: accepts a tuple of only marker components" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    Commands.fromWorld(allocator, &world).spawnOwned(.{Player{}});
+    Commands.fromWorld(allocator, &world).spawnOwned(allocator, .{Player{}});
     world.command_queue.flush(allocator, &world);
 
     try std.testing.expectEqual(1, world.entity_descriptors.items.len);
@@ -149,7 +156,7 @@ test "spawnOwned: runs the components' deinit when the queue is dropped unflushe
     var world = World.init();
     defer world.deinit(allocator);
 
-    Commands.fromWorld(allocator, &world).spawnOwned(.{Owning{ .buffer = try allocator.alloc(u8, 8) }});
+    Commands.fromWorld(allocator, &world).spawnOwned(allocator, .{Owning{ .buffer = try allocator.alloc(u8, 8) }});
 }
 
 test "spawnOwned: defers entity creation until the queue is flushed" {
@@ -162,7 +169,7 @@ test "spawnOwned: defers entity creation until the queue is flushed" {
 
     const commands = Commands.fromWorld(allocator, &world);
 
-    commands.spawnOwned(.{Position{ .x = 1, .y = 2 }});
+    commands.spawnOwned(allocator, .{Position{ .x = 1, .y = 2 }});
     try std.testing.expectEqual(0, world.archetypes.items.len);
 
     world.command_queue.flush(allocator, &world);
@@ -182,7 +189,7 @@ test "despawn: defers entity removal until the queue is flushed" {
 
     const commands = Commands.fromWorld(allocator, &world);
 
-    commands.despawn(entity);
+    commands.despawn(allocator, entity);
     try std.testing.expectEqual(0, world.entity_free_list.items.len);
 
     world.command_queue.flush(allocator, &world);
@@ -204,7 +211,7 @@ test "addOwnedResource: runs the resource's deinit when the queue is dropped unf
     var world = World.init();
     defer world.deinit(allocator);
 
-    Commands.fromWorld(allocator, &world).addOwnedResource(Owning, .{ .buffer = try allocator.alloc(u8, 16) });
+    Commands.fromWorld(allocator, &world).addOwnedResource(allocator, Owning, .{ .buffer = try allocator.alloc(u8, 16) });
 }
 
 test "addOwnedResource: defers registration until the queue is flushed" {
@@ -215,7 +222,7 @@ test "addOwnedResource: defers registration until the queue is flushed" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    Commands.fromWorld(allocator, &world).addOwnedResource(Config, .{ .scale = 2 });
+    Commands.fromWorld(allocator, &world).addOwnedResource(allocator, Config, .{ .scale = 2 });
     try std.testing.expectEqual(null, world.getResource(Config));
 
     world.command_queue.flush(allocator, &world);
@@ -242,7 +249,7 @@ test "removeResource: defers removal until the queue is flushed" {
 
     world.addOwnedResource(allocator, Tracked, .{});
 
-    Commands.fromWorld(allocator, &world).removeResource(Tracked);
+    Commands.fromWorld(allocator, &world).removeResource(allocator, Tracked);
     try std.testing.expectEqual(0, State.deinits);
     try std.testing.expect(world.getResource(Tracked) != null);
 
@@ -269,7 +276,7 @@ test "addSystem: defers registration until the queue is flushed" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    Commands.fromWorld(allocator, &world).addSystem("update", system, null);
+    Commands.fromWorld(allocator, &world).addSystem(allocator, "update", system, null);
     try std.testing.expectEqual(0, world.system_registry.groups.count());
 
     world.runSystems(allocator);
@@ -295,7 +302,7 @@ test "addOneShotSystem: defers registration until the queue is flushed" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    Commands.fromWorld(allocator, &world).addOneShotSystem(system, null);
+    Commands.fromWorld(allocator, &world).addOneShotSystem(allocator, system, null);
     try std.testing.expectEqual(0, State.calls);
 
     world.runSystems(allocator);
@@ -323,7 +330,7 @@ test "addObserver: defers registration until the queue is flushed" {
     var world = World.init();
     defer world.deinit(allocator);
 
-    Commands.fromWorld(allocator, &world).addObserver(EventId.from(Damage), observer, null);
+    Commands.fromWorld(allocator, &world).addObserver(allocator, EventId.from(Damage), observer, null);
 
     world.dispatchOwnedEvent(allocator, Damage{ .amount = 3 });
     try std.testing.expectEqual(0, State.seen);
