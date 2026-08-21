@@ -3,13 +3,24 @@ const util = @import("../utils.zig");
 
 const DeinitFunction = @import("../erasure/deinit.zig").DeinitFunction;
 const DestroyFunction = @import("../erasure/deinit.zig").DestroyFunction;
-const World = @import("world.zig").World;
+const World = @import("../core/world.zig").World;
 
 const getDeinitFunction = @import("../erasure/deinit.zig").getDeinitFunction;
 const getDestroyFunction = @import("../erasure/deinit.zig").getDestroyFunction;
 const resolveParameter = @import("../erasure/parameter.zig").resolveParameter;
 
-pub const PluginsState = struct {
+pub const Plugins = struct {
+    pub const State = PluginsState;
+
+    state: *State,
+    world: *World,
+
+    pub fn fromWorld(_: std.mem.Allocator, world: *World) Plugins {
+        return .{ .state = &world.plugins, .world = world };
+    }
+};
+
+const PluginsState = struct {
     plugins: std.ArrayList(PluginEntry) = .empty,
 
     pub fn init() PluginsState {

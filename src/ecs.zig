@@ -30,7 +30,6 @@ test {
     _ = @import("core/entity.zig");
     _ = @import("core/event_id.zig");
     _ = @import("core/lifecycle.zig");
-    _ = @import("core/plugins.zig");
     _ = @import("core/world.zig");
     _ = @import("erasure/deinit.zig");
     _ = @import("erasure/hash.zig");
@@ -41,6 +40,7 @@ test {
     _ = @import("params/entities.zig");
     _ = @import("params/observers.zig");
     _ = @import("params/one_shots.zig");
+    _ = @import("params/plugins.zig");
     _ = @import("params/resources.zig");
     _ = @import("params/systems.zig");
     _ = @import("params/views/event.zig");
