@@ -2,17 +2,15 @@ const std = @import("std");
 
 const ComponentData = @import("component.zig").ComponentData;
 const ComponentDescriptor = @import("component.zig").ComponentDescriptor;
+const ComponentPointers = @import("component.zig").ComponentPointers;
 const Error = @import("../error.zig").Error;
+
+const componentId = @import("component.zig").componentId;
 const panic = @import("../utils.zig").panic;
 const panicOom = @import("../utils.zig").panicOom;
 
 const preallocated_entities_count: usize = 16;
 var no_component_bytes: [0]u8 = .{};
-
-pub const Column = struct {
-    bytes: []u8,
-    stride: usize,
-};
 
 pub const Archetype = struct {
     pub const InitOptions = struct {
@@ -186,6 +184,29 @@ pub const Archetype = struct {
         return false;
     }
 
+    pub fn getComponents(
+        self: *Archetype,
+        row: u32,
+        comptime components: []const type,
+    ) !ComponentPointers(components) {
+        var result: ComponentPointers(components) = undefined;
+
+        inline for (components, 0..) |Component, index| {
+            if (comptime @sizeOf(Component) == 0) {
+                if (!self.hasComponent(componentId(Component))) return Error.UnknownComponent;
+                result[index] = &struct {
+                    var instance: Component = .{};
+                }.instance;
+            } else {
+                const bytes = self.getComponentBytes(row, componentId(Component)) orelse
+                    return Error.UnknownComponent;
+                result[index] = @ptrCast(@alignCast(bytes.ptr));
+            }
+        }
+
+        return result;
+    }
+
     fn growTo(self: *Archetype, allocator: std.mem.Allocator, new_capacity: usize) void {
         self.entity_ids = allocator.realloc(self.entity_ids, new_capacity) catch
             panicOom("Archetype.growTo");
@@ -212,6 +233,11 @@ pub const Archetype = struct {
             }
         }.order);
     }
+};
+
+pub const Column = struct {
+    bytes: []u8,
+    stride: usize,
 };
 
 test "init: sorts sized components by id" {

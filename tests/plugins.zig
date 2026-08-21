@@ -57,14 +57,14 @@ test "integration: a plugin system and observer can declare parameters beyond th
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    _ = world.addOwnedEntity(allocator, .{Position{ .x = 0, .y = 0 }});
-    _ = world.addOwnedEntity(allocator, .{Position{ .x = 5, .y = 0 }});
+    _ = world.entities.spawnOwned(&world, allocator, .{Position{ .x = 0, .y = 0 }});
+    _ = world.entities.spawnOwned(&world, allocator, .{Position{ .x = 5, .y = 0 }});
 
     world.addOwnedPlugin(allocator, Plugin{});
     world.runSystems(allocator);
-    world.dispatchOwnedEvent(allocator, Damage{ .amount = 7 });
+    Observers.fromWorld(allocator, &world).dispatchOwnedEvent(allocator, Damage{ .amount = 7 });
 
-    const plugin = world.plugins.plugins.items[0];
+    const plugin = world.plugins.plugins.getLast();
     const typed: *Plugin = @ptrCast(@alignCast(plugin.plugin));
 
     try std.testing.expectEqual(2, typed.moved);
@@ -84,10 +84,10 @@ test "integration: a plugin can still query entities from its deinit" {
         }
     };
 
-    const State = struct {
+    const TestState = struct {
         var seen: usize = 0;
     };
-    State.seen = 0;
+    TestState.seen = 0;
 
     const Plugin = struct {
         world: *World = undefined,
@@ -98,14 +98,14 @@ test "integration: a plugin can still query entities from its deinit" {
 
         pub fn build(self: *@This(), plugin_allocator: std.mem.Allocator, world: WorldRef) void {
             self.world = world.world;
-            _ = world.world.addOwnedEntity(plugin_allocator, .{Position{ .x = 1, .y = 1 }});
-            _ = world.world.addOwnedEntity(plugin_allocator, .{Position{ .x = 2, .y = 2 }});
+            _ = world.world.entities.spawnOwned(world.world, plugin_allocator, .{Position{ .x = 1, .y = 1 }});
+            _ = world.world.entities.spawnOwned(world.world, plugin_allocator, .{Position{ .x = 2, .y = 2 }});
         }
 
-        pub fn deinit(self: *@This(), _: std.mem.Allocator) void {
-            const query = self.world.query(&.{Position});
+        pub fn deinit(self: *@This(), inner: std.mem.Allocator) void {
+            const query = Query(&.{Position}).fromWorld(inner, self.world);
             var it = query.iterator();
-            while (it.next()) |_| State.seen += 1;
+            while (it.next()) |_| TestState.seen += 1;
         }
     };
 
@@ -113,14 +113,14 @@ test "integration: a plugin can still query entities from its deinit" {
     world.addOwnedPlugin(allocator, Plugin{});
     world.deinit(allocator);
 
-    try std.testing.expectEqual(2, State.seen);
+    try std.testing.expectEqual(2, TestState.seen);
 }
 
 test "integration: a plugin's build can register systems bound to the plugin" {
-    const State = struct {
+    const TestState = struct {
         var seen: usize = 0;
     };
-    State.seen = 0;
+    TestState.seen = 0;
 
     const Plugin = struct {
         calls: usize = 0,
@@ -135,7 +135,7 @@ test "integration: a plugin's build can register systems bound to the plugin" {
 
         fn system(self: *@This(), _: std.mem.Allocator) void {
             self.calls += 1;
-            State.seen = self.calls;
+            TestState.seen = self.calls;
         }
     };
 
@@ -147,11 +147,11 @@ test "integration: a plugin's build can register systems bound to the plugin" {
     world.runSystems(std.testing.allocator);
     world.runSystems(std.testing.allocator);
 
-    try std.testing.expectEqual(2, State.seen);
+    try std.testing.expectEqual(2, TestState.seen);
 }
 
 test "integration: deinit calls a plugin's deinit" {
-    const State = struct {
+    const TestState = struct {
         var count: usize = 0;
     };
     const Plugin = struct {
@@ -162,7 +162,7 @@ test "integration: deinit calls a plugin's deinit" {
         pub fn build(_: *@This(), _: std.mem.Allocator) void {}
 
         pub fn deinit(_: *@This(), _: std.mem.Allocator) void {
-            State.count += 1;
+            TestState.count += 1;
         }
     };
 
@@ -170,10 +170,15 @@ test "integration: deinit calls a plugin's deinit" {
     world.addOwnedPlugin(std.testing.allocator, Plugin{});
     world.deinit(std.testing.allocator);
 
-    try std.testing.expectEqual(1, State.count);
+    try std.testing.expectEqual(1, TestState.count);
 }
 
 test "integration: plugin systems share state across runs" {
+    const TestState = struct {
+        var highest: usize = 0;
+    };
+    TestState.highest = 0;
+
     const Plugin = struct {
         count: usize = 0,
 
@@ -188,6 +193,7 @@ test "integration: plugin systems share state across runs" {
 
         fn increment(self: *@This(), _: std.mem.Allocator) void {
             self.count += 1;
+            TestState.highest = self.count;
         }
     };
 
@@ -198,11 +204,7 @@ test "integration: plugin systems share state across runs" {
     world.runSystems(std.testing.allocator);
     world.runSystems(std.testing.allocator);
 
-    const first_entry = world.systems.findGroup("update").?.systems.items[0].plugin_function;
-    const plugin: *Plugin = @ptrCast(@alignCast(first_entry.plugin));
-    try std.testing.expectEqual(4, plugin.count);
-    const second_entry = world.systems.findGroup("post_update").?.systems.items[0].plugin_function;
-    try std.testing.expectEqual(first_entry.plugin, second_entry.plugin);
+    try std.testing.expectEqual(4, TestState.highest);
 }
 
 test "integration: a plugin's build registers a one shot system" {
@@ -224,7 +226,7 @@ test "integration: a plugin's build registers a one shot system" {
     world.addOwnedPlugin(std.testing.allocator, Plugin{});
     world.runSystems(std.testing.allocator);
 
-    const plugin: *Plugin = @ptrCast(@alignCast(world.plugins.plugins.items[0].plugin));
+    const plugin: *Plugin = @ptrCast(@alignCast(world.plugins.plugins.getLast().plugin));
     try std.testing.expectEqual(1, plugin.calls);
 }
 
@@ -248,7 +250,7 @@ test "integration: a plugin's build can register a resource, read later by a sys
     world.runSystems(std.testing.allocator);
     world.runSystems(std.testing.allocator);
 
-    const color = world.getResource(ClearColor).?;
+    const color = world.resources.get(ClearColor).?;
     try std.testing.expectApproxEqAbs(@as(f32, 0.8), color.r, 0.0001);
 }
 
@@ -294,9 +296,9 @@ test "integration: a plugin's build can register systems, one-shot systems and o
 
     world.runSystems(allocator);
     world.runSystems(allocator);
-    world.dispatchOwnedEvent(allocator, Damage{ .amount = 7 });
+    Observers.fromWorld(allocator, &world).dispatchOwnedEvent(allocator, Damage{ .amount = 7 });
 
-    const plugin: *Plugin = @ptrCast(@alignCast(world.plugins.plugins.items[0].plugin));
+    const plugin: *Plugin = @ptrCast(@alignCast(world.plugins.plugins.getLast().plugin));
     try std.testing.expectEqual(2, plugin.updates);
     try std.testing.expectEqual(1, plugin.setups);
     try std.testing.expectEqual(7, plugin.damage_seen);
@@ -330,7 +332,7 @@ test "integration: a plugin system registering a plugin system through Systems b
     defer world.deinit(allocator);
 
     world.addOwnedPlugin(allocator, Plugin{});
-    const plugin: *Plugin = @ptrCast(@alignCast(world.plugins.plugins.items[0].plugin));
+    const plugin: *Plugin = @ptrCast(@alignCast(world.plugins.plugins.getLast().plugin));
 
     world.runSystems(allocator);
     try std.testing.expectEqual(1, plugin.registrar_calls);
@@ -346,10 +348,10 @@ test "integration: a plugin's build can register a resource through Resources" {
 
     const Config = struct { scale: f32 };
 
-    const State = struct {
+    const TestState = struct {
         var seen: f32 = 0;
     };
-    State.seen = 0;
+    TestState.seen = 0;
 
     const Plugin = struct {
         pub fn build(_: *@This(), systems: Systems, resources: Resources, inner: std.mem.Allocator) void {
@@ -358,7 +360,7 @@ test "integration: a plugin's build can register a resource through Resources" {
         }
 
         fn read(config: Resource(Config)) void {
-            State.seen = config.value.scale;
+            TestState.seen = config.value.scale;
         }
     };
 
@@ -366,9 +368,9 @@ test "integration: a plugin's build can register a resource through Resources" {
     defer world.deinit(allocator);
 
     world.addOwnedPlugin(allocator, Plugin{});
-    try std.testing.expectEqual(null, world.getResource(Config));
+    try std.testing.expectEqual(null, world.resources.get(Config));
 
     world.runSystems(allocator);
 
-    try std.testing.expectEqual(@as(f32, 4), State.seen);
+    try std.testing.expectEqual(@as(f32, 4), TestState.seen);
 }

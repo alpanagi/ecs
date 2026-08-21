@@ -1,21 +1,23 @@
-pub const World = @import("core/world.zig").World;
-pub const Entity = @import("core/entity.zig").Entity;
-pub const Query = @import("params/views/query.zig").Query;
+pub const DeinitFunction = @import("erasure/deinit.zig").DeinitFunction;
 pub const Entities = @import("params/entities.zig").Entities;
-pub const Resources = @import("params/resources.zig").Resources;
-pub const Systems = @import("params/systems.zig").Systems;
-pub const OneShots = @import("params/one_shots.zig").OneShots;
-pub const Observers = @import("params/observers.zig").Observers;
-pub const Resource = @import("params/views/resource.zig").Resource;
+pub const Entity = @import("core/entity.zig").Entity;
 pub const Event = @import("params/views/event.zig").Event;
 pub const EventId = @import("core/event_id.zig").EventId;
+pub const Observers = @import("params/observers.zig").Observers;
+pub const OneShots = @import("params/one_shots.zig").OneShots;
+pub const Query = @import("params/views/query.zig").Query;
+pub const Resource = @import("params/views/resource.zig").Resource;
+pub const Resources = @import("params/resources.zig").Resources;
+pub const Systems = @import("params/systems.zig").Systems;
+pub const World = @import("core/world.zig").World;
+
 pub const componentId = @import("core/component.zig").componentId;
-pub const DeinitFunction = @import("erasure/deinit.zig").DeinitFunction;
 pub const getDeinitFunction = @import("erasure/deinit.zig").getDeinitFunction;
 
 pub const events = struct {
     pub const component = @import("core/lifecycle.zig").component;
     pub const resource = @import("core/lifecycle.zig").resource;
+
     pub const ComponentAdded = @import("core/lifecycle.zig").ComponentAdded;
     pub const ComponentDestroying = @import("core/lifecycle.zig").ComponentDestroying;
     pub const ResourceAdded = @import("core/lifecycle.zig").ResourceAdded;
@@ -44,5 +46,6 @@ test {
     _ = @import("params/views/event.zig");
     _ = @import("params/views/query.zig");
     _ = @import("params/views/resource.zig");
+    _ = @import("plugins/one_shots.zig");
     _ = @import("utils.zig");
 }

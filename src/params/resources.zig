@@ -1,13 +1,18 @@
+const resource_events = @import("../core/lifecycle.zig").resource;
 const std = @import("std");
+const util = @import("../utils.zig");
 
-const World = @import("../core/world.zig").World;
-const ValueFunctions = @import("../erasure/value.zig").ValueFunctions;
-const hash = @import("../erasure/hash.zig").hash;
 const DeinitFunction = @import("../erasure/deinit.zig").DeinitFunction;
 const DestroyFunction = @import("../erasure/deinit.zig").DestroyFunction;
+const ResourceAdded = @import("../core/lifecycle.zig").ResourceAdded;
+const ResourceDestroying = @import("../core/lifecycle.zig").ResourceDestroying;
+const ValueFunctions = @import("../erasure/value.zig").ValueFunctions;
+const World = @import("../core/world.zig").World;
+
 const getDeinitFunction = @import("../erasure/deinit.zig").getDeinitFunction;
 const getDestroyFunction = @import("../erasure/deinit.zig").getDestroyFunction;
-const util = @import("../utils.zig");
+const hash = @import("../erasure/hash.zig").hash;
+const panicOom = @import("../utils.zig").panicOom;
 
 pub const Resources = struct {
     pub const State = ResourcesState;
@@ -24,15 +29,16 @@ pub const Resources = struct {
         comptime T: type,
         value: T,
     ) void {
-        self.state.queueAdd(allocator, value, addFunctions(T));
+        self.state.queue(allocator, value, addFunctions(T));
     }
 
     pub fn remove(self: Resources, allocator: std.mem.Allocator, comptime T: type) void {
-        self.state.queueRemove(allocator, removeFunction(T));
+        self.state.pending.pushBack(allocator, .{ .remove = removeFunction(T) }) catch
+            panicOom("Resources.remove");
     }
 };
 
-pub const RemoveFunction = *const fn (*World, std.mem.Allocator) void;
+const RemoveFunction = *const fn (*World, std.mem.Allocator) void;
 
 const Pending = union(enum) {
     add: struct {
@@ -56,9 +62,9 @@ const ResourcesState = struct {
 
         while (self.pending.popFront()) |command| {
             switch (command) {
-                .add => |add| {
-                    add.functions.deinit(allocator, add.data);
-                    add.functions.destroy(allocator, add.data);
+                .add => |queued| {
+                    queued.functions.deinit(allocator, queued.data);
+                    queued.functions.destroy(allocator, queued.data);
                 },
                 .remove => {},
             }
@@ -66,7 +72,7 @@ const ResourcesState = struct {
         self.pending.deinit(allocator);
     }
 
-    pub fn queueAdd(
+    fn queue(
         self: *ResourcesState,
         allocator: std.mem.Allocator,
         value: anytype,
@@ -74,37 +80,28 @@ const ResourcesState = struct {
     ) void {
         const Value = @TypeOf(value);
 
-        const data = allocator.create(Value) catch util.panicOom("ResourcesState.queueAdd");
+        const data = allocator.create(Value) catch util.panicOom("ResourcesState.queue");
         data.* = value;
 
         self.pending.pushBack(allocator, .{ .add = .{
             .data = data,
             .functions = functions,
-        } }) catch util.panicOom("ResourcesState.queueAdd");
-    }
-
-    pub fn queueRemove(
-        self: *ResourcesState,
-        allocator: std.mem.Allocator,
-        remove: RemoveFunction,
-    ) void {
-        self.pending.pushBack(allocator, .{ .remove = remove }) catch
-            util.panicOom("ResourcesState.queueRemove");
+        } }) catch util.panicOom("ResourcesState.queue");
     }
 
     pub fn flushPending(self: *ResourcesState, allocator: std.mem.Allocator, world: *World) void {
         while (self.pending.popFront()) |command| {
             switch (command) {
-                .add => |add| {
-                    add.functions.apply(add.data, world, allocator);
-                    add.functions.destroy(allocator, add.data);
+                .add => |queued| {
+                    queued.functions.apply(queued.data, world, allocator);
+                    queued.functions.destroy(allocator, queued.data);
                 },
-                .remove => |remove| remove(world, allocator),
+                .remove => |function| function(world, allocator),
             }
         }
     }
 
-    pub fn addResource(
+    fn addResource(
         self: *ResourcesState,
         allocator: std.mem.Allocator,
         comptime T: type,
@@ -124,16 +121,33 @@ const ResourcesState = struct {
         };
     }
 
-    pub fn getResource(self: *const Resources.State, comptime T: type) ?*T {
+    pub fn get(self: *const ResourcesState, comptime T: type) ?*T {
         const entry = self.resources.get(hash(T)) orelse return null;
         return @ptrCast(@alignCast(entry.value));
     }
 
-    pub fn removeResource(
+    pub fn addOwned(
         self: *ResourcesState,
+        world: *World,
         allocator: std.mem.Allocator,
         comptime T: type,
+        value: T,
     ) void {
+        const replacing = self.get(T) != null;
+        if (replacing) {
+            world.observers.dispatchEventById(allocator, world, resource_events.destroying(T), &ResourceDestroying{});
+        }
+
+        self.addResource(allocator, T, value);
+
+        world.observers.dispatchEventById(allocator, world, resource_events.added(T), &ResourceAdded{});
+    }
+
+    pub fn remove(self: *ResourcesState, world: *World, allocator: std.mem.Allocator, comptime T: type) void {
+        if (self.get(T) == null) return;
+
+        world.observers.dispatchEventById(allocator, world, resource_events.destroying(T), &ResourceDestroying{});
+
         if (self.resources.fetchSwapRemove(hash(T))) |removed| {
             removed.value.release(allocator);
         }
@@ -156,7 +170,7 @@ fn addFunctions(comptime T: type) ValueFunctions {
         .apply = struct {
             fn call(data: *anyopaque, world: *World, allocator: std.mem.Allocator) void {
                 const typed: *T = @ptrCast(@alignCast(data));
-                world.addOwnedResource(allocator, T, typed.*);
+                world.resources.addOwned(world, allocator, T, typed.*);
             }
         }.call,
         .deinit = getDeinitFunction(T),
@@ -167,23 +181,23 @@ fn addFunctions(comptime T: type) ValueFunctions {
 fn removeFunction(comptime T: type) RemoveFunction {
     return struct {
         fn call(world: *World, allocator: std.mem.Allocator) void {
-            world.removeResource(allocator, T);
+            world.resources.remove(world, allocator, T);
         }
     }.call;
 }
 
 test "deinit: calls deinit on every remaining resource" {
-    const State = struct {
+    const TestState = struct {
         var count: usize = 0;
     };
     const A = struct {
         pub fn deinit(_: *@This()) void {
-            State.count += 1;
+            TestState.count += 1;
         }
     };
     const B = struct {
         pub fn deinit(_: *@This()) void {
-            State.count += 1;
+            TestState.count += 1;
         }
     };
 
@@ -193,7 +207,7 @@ test "deinit: calls deinit on every remaining resource" {
 
     registry.deinit(std.testing.allocator);
 
-    try std.testing.expectEqual(2, State.count);
+    try std.testing.expectEqual(2, TestState.count);
 }
 
 test "deinit: frees a resource that owns memory" {
@@ -220,7 +234,7 @@ test "addResource: stores a value that getResource returns" {
 
     registry.addResource(std.testing.allocator, ClearColor, .{ .r = 1, .g = 0, .b = 0 });
 
-    const color = registry.getResource(ClearColor).?;
+    const color = registry.get(ClearColor).?;
     try std.testing.expectEqual(ClearColor{ .r = 1, .g = 0, .b = 0 }, color.*);
 }
 
@@ -234,16 +248,16 @@ test "addResource: replaces an existing resource of the same type" {
     registry.addResource(std.testing.allocator, Counter, .{ .value = 2 });
 
     try std.testing.expectEqual(1, registry.resources.count());
-    try std.testing.expectEqual(2, registry.getResource(Counter).?.value);
+    try std.testing.expectEqual(2, registry.get(Counter).?.value);
 }
 
 test "addResource: calls the old value's deinit when replacing it" {
-    const State = struct {
+    const TestState = struct {
         var count: usize = 0;
     };
     const Tracked = struct {
         pub fn deinit(_: *@This()) void {
-            State.count += 1;
+            TestState.count += 1;
         }
     };
 
@@ -253,7 +267,7 @@ test "addResource: calls the old value's deinit when replacing it" {
     registry.addResource(std.testing.allocator, Tracked, .{});
     registry.addResource(std.testing.allocator, Tracked, .{});
 
-    try std.testing.expectEqual(1, State.count);
+    try std.testing.expectEqual(1, TestState.count);
 }
 
 test "addResource: stores a resource that declares no deinit" {
@@ -264,19 +278,19 @@ test "addResource: stores a resource that declares no deinit" {
 
     registry.addResource(std.testing.allocator, Config, .{ .title = "game" });
 
-    try std.testing.expectEqualStrings("game", registry.getResource(Config).?.title);
+    try std.testing.expectEqualStrings("game", registry.get(Config).?.title);
 }
 
-test "getResource: returns null when the resource was never added" {
+test "get: returns null when the resource was never added" {
     const ClearColor = struct { r: f32, g: f32, b: f32 };
 
     var registry = ResourcesState.init();
     defer registry.deinit(std.testing.allocator);
 
-    try std.testing.expectEqual(null, registry.getResource(ClearColor));
+    try std.testing.expectEqual(null, registry.get(ClearColor));
 }
 
-test "getResource: returns a pointer that mutates the stored value in place" {
+test "get: returns a pointer that mutates the stored value in place" {
     const Counter = struct { value: u32 };
 
     var registry = ResourcesState.init();
@@ -284,42 +298,42 @@ test "getResource: returns a pointer that mutates the stored value in place" {
 
     registry.addResource(std.testing.allocator, Counter, .{ .value = 0 });
 
-    registry.getResource(Counter).?.value += 1;
-    registry.getResource(Counter).?.value += 1;
+    registry.get(Counter).?.value += 1;
+    registry.get(Counter).?.value += 1;
 
-    try std.testing.expectEqual(2, registry.getResource(Counter).?.value);
+    try std.testing.expectEqual(2, registry.get(Counter).?.value);
 }
 
-test "removeResource: removes the resource and calls its deinit" {
-    const State = struct {
+test "remove: drops the entry and runs its deinit" {
+    const TestState = struct {
         var count: usize = 0;
     };
     const Tracked = struct {
         pub fn deinit(_: *@This()) void {
-            State.count += 1;
+            TestState.count += 1;
         }
     };
 
-    var registry = ResourcesState.init();
-    defer registry.deinit(std.testing.allocator);
+    var world = World.init(std.testing.allocator);
+    defer world.deinit(std.testing.allocator);
 
-    registry.addResource(std.testing.allocator, Tracked, .{});
-    registry.removeResource(std.testing.allocator, Tracked);
+    world.resources.addOwned(&world, std.testing.allocator, Tracked, .{});
+    world.resources.remove(&world, std.testing.allocator, Tracked);
 
-    try std.testing.expectEqual(1, State.count);
-    try std.testing.expectEqual(null, registry.getResource(Tracked));
+    try std.testing.expectEqual(1, TestState.count);
+    try std.testing.expectEqual(null, world.resources.get(Tracked));
 }
 
-test "removeResource: does nothing when the resource was never added" {
+test "remove: does nothing when the resource was never added" {
     const Tracked = struct {};
 
-    var registry = ResourcesState.init();
-    defer registry.deinit(std.testing.allocator);
+    var world = World.init(std.testing.allocator);
+    defer world.deinit(std.testing.allocator);
 
-    registry.removeResource(std.testing.allocator, Tracked);
+    world.resources.remove(&world, std.testing.allocator, Tracked);
 }
 
-test "addOwnedResource: runs the resource's deinit when the queue is dropped unflushed" {
+test "addOwned: runs the resource's deinit when the queue is dropped unflushed" {
     const allocator = std.testing.allocator;
 
     const Owning = struct {
@@ -336,7 +350,7 @@ test "addOwnedResource: runs the resource's deinit when the queue is dropped unf
     Resources.fromWorld(allocator, &world).addOwned(allocator, Owning, .{ .buffer = try allocator.alloc(u8, 16) });
 }
 
-test "addOwnedResource: defers registration until the queue is flushed" {
+test "addOwned: defers registration until the queue is flushed" {
     const allocator = std.testing.allocator;
 
     const Config = struct { scale: f32 };
@@ -345,49 +359,49 @@ test "addOwnedResource: defers registration until the queue is flushed" {
     defer world.deinit(allocator);
 
     Resources.fromWorld(allocator, &world).addOwned(allocator, Config, .{ .scale = 2 });
-    try std.testing.expectEqual(null, world.getResource(Config));
+    try std.testing.expectEqual(null, world.resources.get(Config));
 
     world.resources.flushPending(allocator, &world);
 
-    try std.testing.expectEqual(@as(f32, 2), world.getResource(Config).?.scale);
+    try std.testing.expectEqual(@as(f32, 2), world.resources.get(Config).?.scale);
 }
 
-test "removeResource: defers removal until the queue is flushed" {
+test "remove: defers removal until the queue is flushed" {
     const allocator = std.testing.allocator;
 
-    const State = struct {
+    const TestState = struct {
         var deinits: usize = 0;
     };
-    State.deinits = 0;
+    TestState.deinits = 0;
 
     const Tracked = struct {
         pub fn deinit(_: *@This()) void {
-            State.deinits += 1;
+            TestState.deinits += 1;
         }
     };
 
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    world.addOwnedResource(allocator, Tracked, .{});
+    world.resources.addOwned(&world, allocator, Tracked, .{});
 
     Resources.fromWorld(allocator, &world).remove(allocator, Tracked);
-    try std.testing.expectEqual(0, State.deinits);
-    try std.testing.expect(world.getResource(Tracked) != null);
+    try std.testing.expectEqual(0, TestState.deinits);
+    try std.testing.expect(world.resources.get(Tracked) != null);
 
     world.resources.flushPending(allocator, &world);
 
-    try std.testing.expectEqual(1, State.deinits);
-    try std.testing.expectEqual(null, world.getResource(Tracked));
+    try std.testing.expectEqual(1, TestState.deinits);
+    try std.testing.expectEqual(null, world.resources.get(Tracked));
 }
 
-test "queueAdd: defers applying its command until flush" {
+test "queue: defers applying its command until flush" {
     const allocator = std.testing.allocator;
 
-    const State = struct {
+    const TestState = struct {
         var applied_value: u32 = 0;
     };
-    State.applied_value = 0;
+    TestState.applied_value = 0;
 
     var world = World.init(allocator);
     defer world.deinit(allocator);
@@ -395,11 +409,11 @@ test "queueAdd: defers applying its command until flush" {
     var state = Resources.State.init();
     defer state.deinit(allocator);
 
-    state.queueAdd(allocator, @as(u32, 7), .{
+    state.queue(allocator, @as(u32, 7), .{
         .apply = struct {
             fn call(data: *anyopaque, _: *World, _: std.mem.Allocator) void {
                 const typed: *u32 = @ptrCast(@alignCast(data));
-                State.applied_value = typed.*;
+                TestState.applied_value = typed.*;
             }
         }.call,
         .deinit = struct {
@@ -412,24 +426,24 @@ test "queueAdd: defers applying its command until flush" {
             }
         }.call,
     });
-    try std.testing.expectEqual(0, State.applied_value);
+    try std.testing.expectEqual(0, TestState.applied_value);
 
     state.flushPending(allocator, &world);
 
-    try std.testing.expectEqual(7, State.applied_value);
+    try std.testing.expectEqual(7, TestState.applied_value);
 }
 
-test "queueRemove: defers invoking the provided function until flush" {
+test "remove: defers invoking the provided function until flush" {
     const allocator = std.testing.allocator;
 
-    const State = struct {
+    const TestState = struct {
         var removed: bool = false;
     };
-    State.removed = false;
+    TestState.removed = false;
 
     const removeResource = struct {
         fn call(_: *World, _: std.mem.Allocator) void {
-            State.removed = true;
+            TestState.removed = true;
         }
     }.call;
 
@@ -439,10 +453,224 @@ test "queueRemove: defers invoking the provided function until flush" {
     var state = Resources.State.init();
     defer state.deinit(allocator);
 
-    state.queueRemove(allocator, removeResource);
-    try std.testing.expectEqual(false, State.removed);
+    state.pending.pushBack(allocator, .{ .remove = removeResource }) catch unreachable;
+    try std.testing.expectEqual(false, TestState.removed);
 
     state.flushPending(allocator, &world);
 
-    try std.testing.expectEqual(true, State.removed);
+    try std.testing.expectEqual(true, TestState.removed);
+}
+
+test "addOwned: stores a value that getResource returns" {
+    const ClearColor = struct { r: f32, g: f32, b: f32 };
+
+    var world = World.init(std.testing.allocator);
+    defer world.deinit(std.testing.allocator);
+
+    world.resources.addOwned(&world, std.testing.allocator, ClearColor, .{ .r = 0, .g = 1, .b = 0 });
+
+    const color = world.resources.get(ClearColor).?;
+    try std.testing.expectEqual(ClearColor{ .r = 0, .g = 1, .b = 0 }, color.*);
+}
+
+test "addOwned: triggers ResourceAdded" {
+    const Event = @import("views/event.zig").Event;
+
+    const buildObserverEntry = @import("../erasure/system_entry.zig").buildObserverEntry;
+
+    const allocator = std.testing.allocator;
+
+    const Config = struct { scale: f32 };
+
+    const TestState = struct {
+        var calls: usize = 0;
+    };
+    TestState.calls = 0;
+
+    const onAdded = struct {
+        fn call(_: Event(ResourceAdded)) void {
+            TestState.calls += 1;
+        }
+    }.call;
+
+    var world = World.init(allocator);
+    defer world.deinit(allocator);
+
+    world.observers.add(allocator, resource_events.added(Config), buildObserverEntry(onAdded, null));
+    world.resources.addOwned(&world, allocator, Config, .{ .scale = 1 });
+
+    try std.testing.expectEqual(1, TestState.calls);
+}
+
+test "addOwned: triggers Destroying for the old value then Added for the new" {
+    const Event = @import("views/event.zig").Event;
+    const Resource = @import("views/resource.zig").Resource;
+
+    const buildObserverEntry = @import("../erasure/system_entry.zig").buildObserverEntry;
+
+    const allocator = std.testing.allocator;
+
+    const Config = struct { scale: f32 };
+
+    const TestState = struct {
+        var log: [4]u8 = undefined;
+        var count: usize = 0;
+        var scale_at_destroying: ?f32 = null;
+        var scale_at_added: ?f32 = null;
+    };
+    TestState.count = 0;
+    TestState.scale_at_destroying = null;
+    TestState.scale_at_added = null;
+
+    const Handlers = struct {
+        fn onAdded(config: Resource(Config), _: Event(ResourceAdded)) void {
+            TestState.log[TestState.count] = 1;
+            TestState.count += 1;
+            TestState.scale_at_added = config.value.scale;
+        }
+
+        fn onDestroying(config: Resource(Config), _: Event(ResourceDestroying)) void {
+            TestState.log[TestState.count] = 2;
+            TestState.count += 1;
+            TestState.scale_at_destroying = config.value.scale;
+        }
+    };
+
+    var world = World.init(allocator);
+    defer world.deinit(allocator);
+
+    world.observers.add(allocator, resource_events.added(Config), buildObserverEntry(Handlers.onAdded, null));
+    world.observers.add(allocator, resource_events.destroying(Config), buildObserverEntry(Handlers.onDestroying, null));
+
+    world.resources.addOwned(&world, allocator, Config, .{ .scale = 1 });
+    world.resources.addOwned(&world, allocator, Config, .{ .scale = 2 });
+
+    try std.testing.expectEqualSlices(u8, &.{ 1, 2, 1 }, TestState.log[0..TestState.count]);
+    try std.testing.expectEqual(@as(f32, 1), TestState.scale_at_destroying.?);
+    try std.testing.expectEqual(@as(f32, 2), TestState.scale_at_added.?);
+}
+
+test "addOwned: does not trigger component events for the same type" {
+    const component_events = @import("../core/lifecycle.zig").component;
+
+    const ComponentAdded = @import("../core/lifecycle.zig").ComponentAdded;
+    const Event = @import("views/event.zig").Event;
+
+    const buildObserverEntry = @import("../erasure/system_entry.zig").buildObserverEntry;
+
+    const allocator = std.testing.allocator;
+
+    const Shared = struct { value: u32 };
+
+    const TestState = struct {
+        var resource_added: usize = 0;
+        var component_added: usize = 0;
+    };
+    TestState.resource_added = 0;
+    TestState.component_added = 0;
+
+    const Handlers = struct {
+        fn onResource(_: Event(ResourceAdded)) void {
+            TestState.resource_added += 1;
+        }
+
+        fn onComponent(_: Event(ComponentAdded)) void {
+            TestState.component_added += 1;
+        }
+    };
+
+    var world = World.init(allocator);
+    defer world.deinit(allocator);
+
+    world.observers.add(allocator, resource_events.added(Shared), buildObserverEntry(Handlers.onResource, null));
+    world.observers.add(allocator, component_events.added(Shared), buildObserverEntry(Handlers.onComponent, null));
+
+    _ = world.entities.spawnOwned(&world, allocator, .{Shared{ .value = 1 }});
+    try std.testing.expectEqual(1, TestState.component_added);
+    try std.testing.expectEqual(0, TestState.resource_added);
+
+    world.resources.addOwned(&world, allocator, Shared, .{ .value = 2 });
+    try std.testing.expectEqual(1, TestState.component_added);
+    try std.testing.expectEqual(1, TestState.resource_added);
+}
+
+test "remove: removes the resource and calls its deinit" {
+    const TestState = struct {
+        var count: usize = 0;
+    };
+    const Tracked = struct {
+        pub fn deinit(_: *@This()) void {
+            TestState.count += 1;
+        }
+    };
+
+    var world = World.init(std.testing.allocator);
+    defer world.deinit(std.testing.allocator);
+
+    world.resources.addOwned(&world, std.testing.allocator, Tracked, .{});
+    world.resources.remove(&world, std.testing.allocator, Tracked);
+
+    try std.testing.expectEqual(1, TestState.count);
+    try std.testing.expectEqual(null, world.resources.get(Tracked));
+}
+
+test "remove: triggers ResourceDestroying while the value is readable" {
+    const Event = @import("views/event.zig").Event;
+    const Resource = @import("views/resource.zig").Resource;
+
+    const buildObserverEntry = @import("../erasure/system_entry.zig").buildObserverEntry;
+
+    const allocator = std.testing.allocator;
+
+    const Config = struct { scale: f32 };
+
+    const TestState = struct {
+        var seen: ?f32 = null;
+    };
+    TestState.seen = null;
+
+    const onDestroying = struct {
+        fn call(config: Resource(Config), _: Event(ResourceDestroying)) void {
+            TestState.seen = config.value.scale;
+        }
+    }.call;
+
+    var world = World.init(allocator);
+    defer world.deinit(allocator);
+
+    world.observers.add(allocator, resource_events.destroying(Config), buildObserverEntry(onDestroying, null));
+    world.resources.addOwned(&world, allocator, Config, .{ .scale = 5 });
+    world.resources.remove(&world, allocator, Config);
+
+    try std.testing.expectEqual(@as(f32, 5), TestState.seen.?);
+    try std.testing.expectEqual(null, world.resources.get(Config));
+}
+
+test "remove: triggers nothing for an absent resource" {
+    const Event = @import("views/event.zig").Event;
+
+    const buildObserverEntry = @import("../erasure/system_entry.zig").buildObserverEntry;
+
+    const allocator = std.testing.allocator;
+
+    const Config = struct { scale: f32 };
+
+    const TestState = struct {
+        var calls: usize = 0;
+    };
+    TestState.calls = 0;
+
+    const onDestroying = struct {
+        fn call(_: Event(ResourceDestroying)) void {
+            TestState.calls += 1;
+        }
+    }.call;
+
+    var world = World.init(allocator);
+    defer world.deinit(allocator);
+
+    world.observers.add(allocator, resource_events.destroying(Config), buildObserverEntry(onDestroying, null));
+    world.resources.remove(&world, allocator, Config);
+
+    try std.testing.expectEqual(0, TestState.calls);
 }

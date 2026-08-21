@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const DeinitFunction = @import("../erasure/deinit.zig").DeinitFunction;
+
 const getDeinitFunction = @import("../erasure/deinit.zig").getDeinitFunction;
 const hash = @import("../erasure/hash.zig").hash;
 

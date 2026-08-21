@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const World = @import("../../core/world.zig").World;
+
 const panic = @import("../../utils.zig").panic;
 
 pub fn Resource(comptime T: type) type {
@@ -8,7 +9,7 @@ pub fn Resource(comptime T: type) type {
         value: *T,
 
         pub fn fromWorld(_: std.mem.Allocator, world: *World) @This() {
-            const value = world.getResource(T) orelse panic(
+            const value = world.resources.get(T) orelse panic(
                 "system requires resource {s} but it is not registered",
                 .{@typeName(T)},
             );
@@ -25,12 +26,12 @@ test "fromWorld: points at the resource stored in the world" {
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    world.addOwnedResource(allocator, ClearColor, .{ .r = 0.5, .g = 0, .b = 0 });
+    world.resources.addOwned(&world, allocator, ClearColor, .{ .r = 0.5, .g = 0, .b = 0 });
 
     const color = Resource(ClearColor).fromWorld(allocator, &world);
 
     try std.testing.expectEqual(@as(f32, 0.5), color.value.r);
-    try std.testing.expectEqual(world.getResource(ClearColor).?, color.value);
+    try std.testing.expectEqual(world.resources.get(ClearColor).?, color.value);
 }
 
 test "fromWorld: writes through to the stored resource" {
@@ -41,12 +42,12 @@ test "fromWorld: writes through to the stored resource" {
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    world.addOwnedResource(allocator, Counter, .{ .hits = 0 });
+    world.resources.addOwned(&world, allocator, Counter, .{ .hits = 0 });
 
     const counter = Resource(Counter).fromWorld(allocator, &world);
     counter.value.hits += 1;
 
-    try std.testing.expectEqual(1, world.getResource(Counter).?.hits);
+    try std.testing.expectEqual(1, world.resources.get(Counter).?.hits);
 }
 
 test "fromWorld: sees a resource replaced after it was read" {
@@ -57,8 +58,8 @@ test "fromWorld: sees a resource replaced after it was read" {
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    world.addOwnedResource(allocator, Config, .{ .scale = 1 });
-    world.addOwnedResource(allocator, Config, .{ .scale = 2 });
+    world.resources.addOwned(&world, allocator, Config, .{ .scale = 1 });
+    world.resources.addOwned(&world, allocator, Config, .{ .scale = 2 });
 
     const config = Resource(Config).fromWorld(allocator, &world);
 

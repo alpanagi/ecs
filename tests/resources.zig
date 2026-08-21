@@ -27,10 +27,10 @@ test "integration: a resource removed through Resources stays readable for the r
 
     const Config = struct { scale: f32 };
 
-    const State = struct {
+    const TestState = struct {
         var seen_after_remove: ?f32 = null;
     };
-    State.seen_after_remove = null;
+    TestState.seen_after_remove = null;
 
     const Fixture = struct {
         fn remover(config: Resource(Config), resources: Resources) void {
@@ -39,21 +39,21 @@ test "integration: a resource removed through Resources stays readable for the r
         }
 
         fn reader(config: Resource(Config)) void {
-            State.seen_after_remove = config.value.scale;
+            TestState.seen_after_remove = config.value.scale;
         }
     };
 
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    world.addOwnedResource(allocator, Config, .{ .scale = 1 });
+    world.resources.addOwned(&world, allocator, Config, .{ .scale = 1 });
     Systems.fromWorld(allocator, &world).add(allocator, "update", Fixture.remover, null);
     Systems.fromWorld(allocator, &world).add(allocator, "update", Fixture.reader, null);
 
     world.runSystems(allocator);
 
-    try std.testing.expectEqual(@as(f32, 2), State.seen_after_remove.?);
-    try std.testing.expectEqual(null, world.getResource(Config));
+    try std.testing.expectEqual(@as(f32, 2), TestState.seen_after_remove.?);
+    try std.testing.expectEqual(null, world.resources.get(Config));
 }
 
 test "integration: a resource added through Resources is visible to the next group" {
@@ -61,10 +61,10 @@ test "integration: a resource added through Resources is visible to the next gro
 
     const Config = struct { scale: f32 };
 
-    const State = struct {
+    const TestState = struct {
         var seen: ?f32 = null;
     };
-    State.seen = null;
+    TestState.seen = null;
 
     const Fixture = struct {
         fn producer(resources: Resources) void {
@@ -72,7 +72,7 @@ test "integration: a resource added through Resources is visible to the next gro
         }
 
         fn consumer(config: Resource(Config)) void {
-            State.seen = config.value.scale;
+            TestState.seen = config.value.scale;
         }
     };
 
@@ -84,7 +84,7 @@ test "integration: a resource added through Resources is visible to the next gro
 
     world.runSystems(allocator);
 
-    try std.testing.expectEqual(@as(f32, 3), State.seen.?);
+    try std.testing.expectEqual(@as(f32, 3), TestState.seen.?);
 }
 
 test "integration: an unflushed addResource value is freed without being applied" {
@@ -100,7 +100,7 @@ test "integration: an unflushed addResource value is freed without being applied
     world.entities.deinit(allocator);
     world.entities = Entities.State.init();
 
-    try std.testing.expectEqual(null, world.getResource(Config));
+    try std.testing.expectEqual(null, world.resources.get(Config));
 }
 
 test "integration: a resource Added observer can already read the resource" {
@@ -108,14 +108,14 @@ test "integration: a resource Added observer can already read the resource" {
 
     const Config = struct { scale: f32 };
 
-    const State = struct {
+    const TestState = struct {
         var seen: ?f32 = null;
     };
-    State.seen = null;
+    TestState.seen = null;
 
     const onAdded = struct {
         fn call(config: Resource(Config), _: Event(ResourceAdded)) void {
-            State.seen = config.value.scale;
+            TestState.seen = config.value.scale;
         }
     }.call;
 
@@ -127,7 +127,7 @@ test "integration: a resource Added observer can already read the resource" {
 
     world.runSystems(allocator);
 
-    try std.testing.expectEqual(@as(f32, 3), State.seen.?);
+    try std.testing.expectEqual(@as(f32, 3), TestState.seen.?);
 }
 
 test "integration: a resource added through Resources fires Added at the flush" {
@@ -135,14 +135,14 @@ test "integration: a resource added through Resources fires Added at the flush" 
 
     const Config = struct { scale: f32 };
 
-    const State = struct {
+    const TestState = struct {
         var calls: usize = 0;
     };
-    State.calls = 0;
+    TestState.calls = 0;
 
     const onAdded = struct {
         fn call(_: Event(ResourceAdded)) void {
-            State.calls += 1;
+            TestState.calls += 1;
         }
     }.call;
 
@@ -151,11 +151,11 @@ test "integration: a resource added through Resources fires Added at the flush" 
 
     Observers.fromWorld(allocator, &world).add(allocator, resource_events.added(Config), onAdded, null);
     Resources.fromWorld(allocator, &world).addOwned(allocator, Config, .{ .scale = 1 });
-    try std.testing.expectEqual(0, State.calls);
+    try std.testing.expectEqual(0, TestState.calls);
 
     world.runSystems(allocator);
 
-    try std.testing.expectEqual(1, State.calls);
+    try std.testing.expectEqual(1, TestState.calls);
 }
 
 test "integration: a resource removed through Resources fires Destroying at the flush" {
@@ -163,14 +163,14 @@ test "integration: a resource removed through Resources fires Destroying at the 
 
     const Config = struct { scale: f32 };
 
-    const State = struct {
+    const TestState = struct {
         var calls: usize = 0;
     };
-    State.calls = 0;
+    TestState.calls = 0;
 
     const onDestroying = struct {
         fn call(_: Event(ResourceDestroying)) void {
-            State.calls += 1;
+            TestState.calls += 1;
         }
     }.call;
 
@@ -178,12 +178,12 @@ test "integration: a resource removed through Resources fires Destroying at the 
     defer world.deinit(allocator);
 
     Observers.fromWorld(allocator, &world).add(allocator, resource_events.destroying(Config), onDestroying, null);
-    world.addOwnedResource(allocator, Config, .{ .scale = 1 });
+    world.resources.addOwned(&world, allocator, Config, .{ .scale = 1 });
 
     Resources.fromWorld(allocator, &world).remove(allocator, Config);
-    try std.testing.expectEqual(0, State.calls);
+    try std.testing.expectEqual(0, TestState.calls);
 
     world.runSystems(allocator);
 
-    try std.testing.expectEqual(1, State.calls);
+    try std.testing.expectEqual(1, TestState.calls);
 }

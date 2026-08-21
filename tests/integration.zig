@@ -5,4 +5,5 @@ test {
     _ = @import("queries.zig");
     _ = @import("resources.zig");
     _ = @import("scheduling.zig");
+    _ = @import("world.zig");
 }

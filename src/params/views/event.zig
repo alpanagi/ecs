@@ -1,5 +1,3 @@
-const std = @import("std");
-
 pub fn Event(comptime T: type) type {
     return struct {
         value: *const T,

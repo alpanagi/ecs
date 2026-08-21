@@ -1,13 +1,11 @@
 const std = @import("std");
 
-const World = @import("../core/world.zig").World;
-const Entities = @import("entities.zig").Entities;
 const SystemEntry = @import("../erasure/system_entry.zig").SystemEntry;
+const World = @import("../core/world.zig").World;
+
 const buildSystemEntry = @import("../erasure/system_entry.zig").buildSystemEntry;
 const panic = @import("../utils.zig").panic;
 const panicOom = @import("../utils.zig").panicOom;
-
-pub const baseline_groups = [_][]const u8{ "one_shots", "pre_update", "update", "post_update" };
 
 pub const Systems = struct {
     pub const State = SystemsState;
@@ -25,7 +23,7 @@ pub const Systems = struct {
         comptime function: anytype,
         plugin: anytype,
     ) void {
-        self.state.queueSystem(
+        self.state.queue(
             allocator,
             group_name,
             buildSystemEntry(function, plugin),
@@ -69,12 +67,12 @@ const SystemsState = struct {
         self.deinitPending(allocator);
     }
 
-    pub fn findGroup(self: *SystemsState, name: []const u8) ?*Group {
+    fn findGroup(self: *SystemsState, name: []const u8) ?*Group {
         const index = self.groupIndex(name) orelse return null;
         return &self.groups.items[index];
     }
 
-    pub fn groupIndex(self: *const Systems.State, name: []const u8) ?usize {
+    fn groupIndex(self: *const Systems.State, name: []const u8) ?usize {
         for (self.groups.items, 0..) |group, index| {
             if (std.mem.eql(u8, group.name, name)) return index;
         }
@@ -125,7 +123,7 @@ const SystemsState = struct {
             panicOom("Systems.State.insertGroup");
     }
 
-    pub fn addSystemEntry(
+    pub fn add(
         self: *SystemsState,
         allocator: std.mem.Allocator,
         name: []const u8,
@@ -135,51 +133,51 @@ const SystemsState = struct {
             "system registered into group \"{s}\", which is not declared",
             .{name},
         );
-        group.systems.append(allocator, entry) catch panicOom("Systems.State.addSystemEntry");
+        group.systems.append(allocator, entry) catch panicOom("SystemsState.add");
     }
 
-    pub fn deinitPending(self: *SystemsState, allocator: std.mem.Allocator) void {
+    fn deinitPending(self: *SystemsState, allocator: std.mem.Allocator) void {
         while (self.commands.popFront()) |command| {
             switch (command) {
                 .declare_group => |declare| freeDeclaration(allocator, declare.name, declare.placement),
-                .add_system => |add| allocator.free(add.group),
+                .add_system => |queued| allocator.free(queued.group),
             }
         }
         self.commands.deinit(allocator);
     }
 
-    pub fn queueGroup(
+    fn queueGroup(
         self: *SystemsState,
         allocator: std.mem.Allocator,
         name: []const u8,
         placement: Placement,
     ) void {
-        const owned_name = allocator.dupe(u8, name) catch panicOom("Systems.State.queueGroup");
+        const owned_name = allocator.dupe(u8, name) catch panicOom("SystemsState.queueGroup");
         const owned_placement: Placement = switch (placement) {
             .end => .end,
             .before => |anchor| .{ .before = allocator.dupe(u8, anchor) catch
-                panicOom("Systems.State.queueGroup") },
+                panicOom("SystemsState.queueGroup") },
             .after => |anchor| .{ .after = allocator.dupe(u8, anchor) catch
-                panicOom("Systems.State.queueGroup") },
+                panicOom("SystemsState.queueGroup") },
         };
 
         self.commands.pushBack(allocator, .{ .declare_group = .{
             .name = owned_name,
             .placement = owned_placement,
-        } }) catch panicOom("Systems.State.queueGroup");
+        } }) catch panicOom("SystemsState.queueGroup");
     }
 
-    pub fn queueSystem(
+    fn queue(
         self: *SystemsState,
         allocator: std.mem.Allocator,
         group: []const u8,
         entry: SystemEntry,
     ) void {
-        const owned = allocator.dupe(u8, group) catch panicOom("Systems.State.queueSystem");
+        const owned = allocator.dupe(u8, group) catch panicOom("SystemsState.queue");
         self.commands.pushBack(allocator, .{ .add_system = .{
             .group = owned,
             .entry = entry,
-        } }) catch panicOom("Systems.State.queueSystem");
+        } }) catch panicOom("SystemsState.queue");
     }
 
     pub fn flushPending(self: *SystemsState, allocator: std.mem.Allocator) void {
@@ -193,9 +191,9 @@ const SystemsState = struct {
                     }
                     freeDeclaration(allocator, declare.name, declare.placement);
                 },
-                .add_system => |add| {
-                    self.addSystemEntry(allocator, add.group, add.entry);
-                    allocator.free(add.group);
+                .add_system => |queued| {
+                    self.add(allocator, queued.group, queued.entry);
+                    allocator.free(queued.group);
                 },
             }
         }
@@ -237,7 +235,7 @@ fn freeDeclaration(allocator: std.mem.Allocator, name: []const u8, placement: Pl
     }
 }
 
-test "addSystemEntry: appends into a declared group" {
+test "add: appends into a declared group" {
     const system = struct {
         fn call(_: std.mem.Allocator) void {}
     }.call;
@@ -245,40 +243,40 @@ test "addSystemEntry: appends into a declared group" {
     var registry = Systems.State.init();
     defer registry.deinit(std.testing.allocator);
     registry.declareGroup(std.testing.allocator, "update");
-    registry.addSystemEntry(std.testing.allocator, "update", buildSystemEntry(system, null));
+    registry.add(std.testing.allocator, "update", buildSystemEntry(system, null));
 
     try std.testing.expectEqual(1, registry.groups.items.len);
     try std.testing.expectEqual(1, registry.findGroup("update").?.systems.items.len);
 }
 
-test "addSystemEntry: appends to an existing group in call order" {
-    const State = struct {
+test "add: appends to an existing group in call order" {
+    const TestState = struct {
         var calls: [2]u8 = undefined;
         var count: usize = 0;
     };
     const a = struct {
         fn call(_: std.mem.Allocator) void {
-            State.calls[State.count] = 1;
-            State.count += 1;
+            TestState.calls[TestState.count] = 1;
+            TestState.count += 1;
         }
     }.call;
     const b = struct {
         fn call(_: std.mem.Allocator) void {
-            State.calls[State.count] = 2;
-            State.count += 1;
+            TestState.calls[TestState.count] = 2;
+            TestState.count += 1;
         }
     }.call;
 
     var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
-    world.systems.addSystemEntry(std.testing.allocator, "update", buildSystemEntry(a, null));
-    world.systems.addSystemEntry(std.testing.allocator, "update", buildSystemEntry(b, null));
+    world.systems.add(std.testing.allocator, "update", buildSystemEntry(a, null));
+    world.systems.add(std.testing.allocator, "update", buildSystemEntry(b, null));
 
     world.runSystems(std.testing.allocator);
-    try std.testing.expectEqualSlices(u8, &.{ 1, 2 }, &State.calls);
+    try std.testing.expectEqualSlices(u8, &.{ 1, 2 }, &TestState.calls);
 }
 
-test "addSystemEntry: binds the plugin pointer when provided" {
+test "add: binds the plugin pointer when provided" {
     const Plugin = struct {
         calls: usize = 0,
 
@@ -290,7 +288,7 @@ test "addSystemEntry: binds the plugin pointer when provided" {
     var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
     var plugin = Plugin{};
-    world.systems.addSystemEntry(std.testing.allocator, "update", buildSystemEntry(Plugin.update, &plugin));
+    world.systems.add(std.testing.allocator, "update", buildSystemEntry(Plugin.update, &plugin));
 
     world.runSystems(std.testing.allocator);
     try std.testing.expectEqual(1, plugin.calls);
@@ -361,7 +359,7 @@ test "pending: deinit releases queued commands without applying them" {
 
     var state = Systems.State.init();
     state.declareGroup(allocator, "update");
-    state.queueSystem(allocator, "update", entry);
+    state.queue(allocator, "update", entry);
 
     try std.testing.expectEqual(0, state.findGroup("update").?.systems.items.len);
 
@@ -409,7 +407,7 @@ test "pending: queueSystem: defers registration until flush" {
     defer registry.deinit(allocator);
     registry.declareGroup(allocator, "update");
 
-    registry.queueSystem(allocator, "update", entry);
+    registry.queue(allocator, "update", entry);
     try std.testing.expectEqual(0, registry.findGroup("update").?.systems.items.len);
 
     registry.flushPending(allocator);
@@ -429,7 +427,7 @@ test "pending: addSystem: owns the group name until the flush" {
     registry.declareGroup(allocator, "physics");
 
     var buffer: [7]u8 = "physics".*;
-    registry.queueSystem(allocator, &buffer, entry);
+    registry.queue(allocator, &buffer, entry);
     @memset(&buffer, 'x');
 
     registry.flushPending(allocator);
@@ -449,7 +447,7 @@ test "pending: flush: leaves the queue empty" {
     defer registry.deinit(allocator);
     registry.declareGroup(allocator, "update");
 
-    registry.queueSystem(allocator, "update", entry);
+    registry.queue(allocator, "update", entry);
     registry.flushPending(allocator);
 
     try std.testing.expectEqual(0, registry.commands.len);
@@ -461,6 +459,7 @@ test "declareGroup: defers the declaration until the queue is flushed" {
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
+    world.systems.flushPending(allocator);
     const declared = world.systems.groups.items.len;
 
     Systems.fromWorld(allocator, &world).declareGroup(allocator, "physics");
@@ -532,7 +531,9 @@ test "addGroupAfter: owns the anchor until the flush" {
 }
 
 test "resolves only the parameters a system declares, in any order" {
-    const State = struct {
+    const Entities = @import("entities.zig").Entities;
+
+    const TestState = struct {
         var calls: [4]u8 = undefined;
         var count: usize = 0;
 
@@ -544,37 +545,37 @@ test "resolves only the parameters a system declares, in any order" {
 
     const both = struct {
         fn call(_: Entities, _: std.mem.Allocator) void {
-            State.record(1);
+            TestState.record(1);
         }
     }.call;
     const reversed = struct {
         fn call(_: std.mem.Allocator, _: Entities) void {
-            State.record(2);
+            TestState.record(2);
         }
     }.call;
     const commands_only = struct {
         fn call(_: Entities) void {
-            State.record(3);
+            TestState.record(3);
         }
     }.call;
     const nothing = struct {
         fn call() void {
-            State.record(4);
+            TestState.record(4);
         }
     }.call;
 
-    State.count = 0;
+    TestState.count = 0;
 
     var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
-    world.systems.addSystemEntry(std.testing.allocator, "update", buildSystemEntry(both, null));
-    world.systems.addSystemEntry(std.testing.allocator, "update", buildSystemEntry(reversed, null));
-    world.systems.addSystemEntry(std.testing.allocator, "update", buildSystemEntry(commands_only, null));
-    world.systems.addSystemEntry(std.testing.allocator, "update", buildSystemEntry(nothing, null));
+    world.systems.add(std.testing.allocator, "update", buildSystemEntry(both, null));
+    world.systems.add(std.testing.allocator, "update", buildSystemEntry(reversed, null));
+    world.systems.add(std.testing.allocator, "update", buildSystemEntry(commands_only, null));
+    world.systems.add(std.testing.allocator, "update", buildSystemEntry(nothing, null));
 
     world.runSystems(std.testing.allocator);
 
-    try std.testing.expectEqualSlices(u8, &.{ 1, 2, 3, 4 }, &State.calls);
+    try std.testing.expectEqualSlices(u8, &.{ 1, 2, 3, 4 }, &TestState.calls);
 }
 
 test "accepts any type declaring fromWorld as a system parameter" {
@@ -587,60 +588,133 @@ test "accepts any type declaring fromWorld as a system parameter" {
         }
     };
 
-    const State = struct {
+    const TestState = struct {
         var seed: u32 = 0;
         var world: ?*World = null;
     };
-    State.seed = 0;
-    State.world = null;
+    TestState.seed = 0;
+    TestState.world = null;
 
     const system = struct {
         fn call(counter: Counter) void {
-            State.seed = counter.seed;
-            State.world = counter.world;
+            TestState.seed = counter.seed;
+            TestState.world = counter.world;
         }
     }.call;
 
     var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
-    world.systems.addSystemEntry(std.testing.allocator, "update", buildSystemEntry(system, null));
+    world.systems.add(std.testing.allocator, "update", buildSystemEntry(system, null));
 
     world.runSystems(std.testing.allocator);
 
-    try std.testing.expectEqual(42, State.seed);
-    try std.testing.expectEqual(&world, State.world);
+    try std.testing.expectEqual(42, TestState.seed);
+    try std.testing.expectEqual(&world, TestState.world);
 }
 
 test "runs systems group by group, in registration order" {
-    const State = struct {
+    const TestState = struct {
         var calls: [3]u8 = undefined;
         var count: usize = 0;
     };
     const a = struct {
         fn call(_: std.mem.Allocator) void {
-            State.calls[State.count] = 1;
-            State.count += 1;
+            TestState.calls[TestState.count] = 1;
+            TestState.count += 1;
         }
     }.call;
     const b = struct {
         fn call(_: std.mem.Allocator) void {
-            State.calls[State.count] = 2;
-            State.count += 1;
+            TestState.calls[TestState.count] = 2;
+            TestState.count += 1;
         }
     }.call;
     const c = struct {
         fn call(_: std.mem.Allocator) void {
-            State.calls[State.count] = 3;
-            State.count += 1;
+            TestState.calls[TestState.count] = 3;
+            TestState.count += 1;
         }
     }.call;
 
     var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
-    world.systems.addSystemEntry(std.testing.allocator, "pre_update", buildSystemEntry(a, null));
-    world.systems.addSystemEntry(std.testing.allocator, "update", buildSystemEntry(b, null));
-    world.systems.addSystemEntry(std.testing.allocator, "pre_update", buildSystemEntry(c, null));
+    world.systems.add(std.testing.allocator, "pre_update", buildSystemEntry(a, null));
+    world.systems.add(std.testing.allocator, "update", buildSystemEntry(b, null));
+    world.systems.add(std.testing.allocator, "pre_update", buildSystemEntry(c, null));
 
     world.runSystems(std.testing.allocator);
-    try std.testing.expectEqualSlices(u8, &.{ 1, 3, 2 }, &State.calls);
+    try std.testing.expectEqualSlices(u8, &.{ 1, 3, 2 }, &TestState.calls);
+}
+
+test "add: registers a system that runSystems then runs" {
+    const TestState = struct {
+        var called = false;
+    };
+    const system = struct {
+        fn call(_: std.mem.Allocator) void {
+            TestState.called = true;
+        }
+    }.call;
+
+    var world = World.init(std.testing.allocator);
+    defer world.deinit(std.testing.allocator);
+
+    Systems.fromWorld(std.testing.allocator, &world).add(std.testing.allocator, "update", system, null);
+
+    world.runSystems(std.testing.allocator);
+    try std.testing.expect(TestState.called);
+}
+
+test "add: groups systems by name in call order" {
+    const TestState = struct {
+        var calls: [2]u8 = undefined;
+        var count: usize = 0;
+    };
+    const a = struct {
+        fn call(_: std.mem.Allocator) void {
+            TestState.calls[TestState.count] = 1;
+            TestState.count += 1;
+        }
+    }.call;
+    const b = struct {
+        fn call(_: std.mem.Allocator) void {
+            TestState.calls[TestState.count] = 2;
+            TestState.count += 1;
+        }
+    }.call;
+
+    var world = World.init(std.testing.allocator);
+    defer world.deinit(std.testing.allocator);
+
+    Systems.fromWorld(std.testing.allocator, &world).add(std.testing.allocator, "update", a, null);
+    Systems.fromWorld(std.testing.allocator, &world).add(std.testing.allocator, "update", b, null);
+
+    world.runSystems(std.testing.allocator);
+    try std.testing.expectEqualSlices(u8, &.{ 1, 2 }, &TestState.calls);
+}
+
+test "flushPending: applies queued registrations without running a frame" {
+    const allocator = std.testing.allocator;
+
+    const TestState = struct {
+        var calls: usize = 0;
+    };
+    TestState.calls = 0;
+
+    const system = struct {
+        fn call() void {
+            TestState.calls += 1;
+        }
+    }.call;
+
+    var world = World.init(allocator);
+    defer world.deinit(allocator);
+
+    Systems.fromWorld(allocator, &world).add(allocator, "update", system, null);
+    try std.testing.expectEqual(0, world.systems.groups.items[world.systems.groupIndex("update").?].systems.items.len);
+
+    world.systems.flushPending(allocator);
+
+    try std.testing.expectEqual(1, world.systems.groups.items[world.systems.groupIndex("update").?].systems.items.len);
+    try std.testing.expectEqual(0, TestState.calls);
 }

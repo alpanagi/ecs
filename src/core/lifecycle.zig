@@ -2,7 +2,7 @@ const std = @import("std");
 
 const Entity = @import("entity.zig").Entity;
 const EventId = @import("event_id.zig").EventId;
-const ComponentDescriptor = @import("component.zig").ComponentDescriptor;
+
 const componentId = @import("component.zig").componentId;
 const hash = @import("../erasure/hash.zig").hash;
 
@@ -50,6 +50,8 @@ test "ResourceAdded: carries no payload" {
 }
 
 test "component.added: keys the subject on the component descriptor's id" {
+    const ComponentDescriptor = @import("component.zig").ComponentDescriptor;
+
     const Position = struct { x: f32, y: f32 };
 
     try std.testing.expectEqual(

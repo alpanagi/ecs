@@ -1,9 +1,9 @@
 const std = @import("std");
 
-const World = @import("../core/world.zig").World;
-const Event = @import("views/event.zig").Event;
 const EventId = @import("../core/event_id.zig").EventId;
 const ObserverEntry = @import("../erasure/system_entry.zig").ObserverEntry;
+const World = @import("../core/world.zig").World;
+
 const buildObserverEntry = @import("../erasure/system_entry.zig").buildObserverEntry;
 const getDeinitFunction = @import("../erasure/deinit.zig").getDeinitFunction;
 const panicOom = @import("../utils.zig").panicOom;
@@ -59,7 +59,7 @@ const ObserversState = struct {
         gop.value_ptr.append(allocator, entry) catch panicOom("Observers.State.add");
     }
 
-    pub fn queue(
+    fn queue(
         self: *ObserversState,
         allocator: std.mem.Allocator,
         event_id: EventId,
@@ -68,7 +68,7 @@ const ObserversState = struct {
         self.pending.pushBack(allocator, .{
             .event_id = event_id,
             .entry = entry,
-        }) catch panicOom("Observers.State.queue");
+        }) catch panicOom("ObserversState.queue");
     }
 
     pub fn flushPending(self: *ObserversState, allocator: std.mem.Allocator) void {
@@ -84,11 +84,11 @@ const ObserversState = struct {
         event: anytype,
     ) void {
         var owned = event;
-        self.dispatch(allocator, world, EventId.from(@TypeOf(event)), &owned);
+        self.dispatchEventById(allocator, world, EventId.from(@TypeOf(event)), &owned);
         getDeinitFunction(@TypeOf(event))(allocator, &owned);
     }
 
-    pub fn dispatch(
+    pub fn dispatchEventById(
         self: *const ObserversState,
         allocator: std.mem.Allocator,
         world: *World,
@@ -106,14 +106,16 @@ const Registration = struct {
     entry: ObserverEntry,
 };
 
-test "dispatch: runs a registered observer with the event data" {
+test "dispatchEventById: runs a registered observer with the event data" {
+    const Event = @import("views/event.zig").Event;
+
     const Damage = struct { amount: u32 };
-    const State = struct {
+    const TestState = struct {
         var seen: u32 = 0;
     };
     const observer = struct {
         fn call(event: Event(Damage)) void {
-            State.seen = event.value.amount;
+            TestState.seen = event.value.amount;
         }
     }.call;
 
@@ -122,12 +124,14 @@ test "dispatch: runs a registered observer with the event data" {
     world.observers.add(std.testing.allocator, EventId.from(Damage), buildObserverEntry(observer, null));
 
     const damage = Damage{ .amount = 10 };
-    world.observers.dispatch(std.testing.allocator, &world, EventId.from(Damage), &damage);
+    world.observers.dispatchEventById(std.testing.allocator, &world, EventId.from(Damage), &damage);
 
-    try std.testing.expectEqual(10, State.seen);
+    try std.testing.expectEqual(10, TestState.seen);
 }
 
-test "dispatch: runs a plugin observer through its bound plugin" {
+test "dispatchEventById: runs a plugin observer through its bound plugin" {
+    const Event = @import("views/event.zig").Event;
+
     const Damage = struct { amount: u32 };
     const Plugin = struct {
         total: u32 = 0,
@@ -142,28 +146,30 @@ test "dispatch: runs a plugin observer through its bound plugin" {
     var plugin = Plugin{};
     world.observers.add(std.testing.allocator, EventId.from(Damage), buildObserverEntry(Plugin.onDamage, &plugin));
 
-    world.observers.dispatch(std.testing.allocator, &world, EventId.from(Damage), &Damage{ .amount = 3 });
-    world.observers.dispatch(std.testing.allocator, &world, EventId.from(Damage), &Damage{ .amount = 4 });
+    world.observers.dispatchEventById(std.testing.allocator, &world, EventId.from(Damage), &Damage{ .amount = 3 });
+    world.observers.dispatchEventById(std.testing.allocator, &world, EventId.from(Damage), &Damage{ .amount = 4 });
 
     try std.testing.expectEqual(7, plugin.total);
 }
 
-test "dispatch: runs observers for the same event id in registration order" {
+test "dispatchEventById: runs observers for the same event id in registration order" {
+    const Event = @import("views/event.zig").Event;
+
     const Damage = struct { amount: u32 };
-    const State = struct {
+    const TestState = struct {
         var calls: [2]u8 = undefined;
         var count: usize = 0;
     };
     const a = struct {
         fn call(_: Event(Damage)) void {
-            State.calls[State.count] = 1;
-            State.count += 1;
+            TestState.calls[TestState.count] = 1;
+            TestState.count += 1;
         }
     }.call;
     const b = struct {
         fn call(_: Event(Damage)) void {
-            State.calls[State.count] = 2;
-            State.count += 1;
+            TestState.calls[TestState.count] = 2;
+            TestState.count += 1;
         }
     }.call;
 
@@ -172,20 +178,22 @@ test "dispatch: runs observers for the same event id in registration order" {
     world.observers.add(std.testing.allocator, EventId.from(Damage), buildObserverEntry(a, null));
     world.observers.add(std.testing.allocator, EventId.from(Damage), buildObserverEntry(b, null));
 
-    world.observers.dispatch(std.testing.allocator, &world, EventId.from(Damage), &Damage{ .amount = 1 });
+    world.observers.dispatchEventById(std.testing.allocator, &world, EventId.from(Damage), &Damage{ .amount = 1 });
 
-    try std.testing.expectEqualSlices(u8, &.{ 1, 2 }, &State.calls);
+    try std.testing.expectEqualSlices(u8, &.{ 1, 2 }, &TestState.calls);
 }
 
-test "dispatch: does not run observers registered for a different event id" {
+test "dispatchEventById: does not run observers registered for a different event id" {
+    const Event = @import("views/event.zig").Event;
+
     const Damage = struct { amount: u32 };
     const Healing = struct { amount: u32 };
-    const State = struct {
+    const TestState = struct {
         var damage_calls: usize = 0;
     };
     const onDamage = struct {
         fn call(_: Event(Damage)) void {
-            State.damage_calls += 1;
+            TestState.damage_calls += 1;
         }
     }.call;
 
@@ -193,42 +201,44 @@ test "dispatch: does not run observers registered for a different event id" {
     defer world.deinit(std.testing.allocator);
     world.observers.add(std.testing.allocator, EventId.from(Damage), buildObserverEntry(onDamage, null));
 
-    world.observers.dispatch(std.testing.allocator, &world, EventId.from(Healing), &Healing{ .amount = 5 });
+    world.observers.dispatchEventById(std.testing.allocator, &world, EventId.from(Healing), &Healing{ .amount = 5 });
 
-    try std.testing.expectEqual(0, State.damage_calls);
+    try std.testing.expectEqual(0, TestState.damage_calls);
 }
 
-test "dispatch: runs nothing when no observer is registered for the event id" {
+test "dispatchEventById: runs nothing when no observer is registered for the event id" {
     const Damage = struct { amount: u32 };
 
     var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
 
-    world.observers.dispatch(std.testing.allocator, &world, EventId.from(Damage), &Damage{ .amount = 1 });
+    world.observers.dispatchEventById(std.testing.allocator, &world, EventId.from(Damage), &Damage{ .amount = 1 });
 }
 
-test "dispatch: routes on the subject as well as the event" {
+test "dispatchEventById: routes on the subject as well as the event" {
     const component = @import("../core/lifecycle.zig").component;
+
     const ComponentAdded = @import("../core/lifecycle.zig").ComponentAdded;
+    const Event = @import("views/event.zig").Event;
 
     const Position = struct { x: f32, y: f32 };
     const Velocity = struct { dx: f32, dy: f32 };
 
-    const State = struct {
+    const TestState = struct {
         var position_calls: usize = 0;
         var velocity_calls: usize = 0;
     };
-    State.position_calls = 0;
-    State.velocity_calls = 0;
+    TestState.position_calls = 0;
+    TestState.velocity_calls = 0;
 
     const onPosition = struct {
         fn call(_: Event(ComponentAdded)) void {
-            State.position_calls += 1;
+            TestState.position_calls += 1;
         }
     }.call;
     const onVelocity = struct {
         fn call(_: Event(ComponentAdded)) void {
-            State.velocity_calls += 1;
+            TestState.velocity_calls += 1;
         }
     }.call;
 
@@ -239,13 +249,13 @@ test "dispatch: routes on the subject as well as the event" {
     world.observers.add(std.testing.allocator, component.added(Velocity), buildObserverEntry(onVelocity, null));
 
     const event = ComponentAdded{ .entity = .{ .id = 0, .generation = 0 }, .component = 0 };
-    world.observers.dispatch(std.testing.allocator, &world, component.added(Position), &event);
+    world.observers.dispatchEventById(std.testing.allocator, &world, component.added(Position), &event);
 
-    try std.testing.expectEqual(1, State.position_calls);
-    try std.testing.expectEqual(0, State.velocity_calls);
+    try std.testing.expectEqual(1, TestState.position_calls);
+    try std.testing.expectEqual(0, TestState.velocity_calls);
 }
 
-test "State.queue: defers registration until flush" {
+test "queue: defers registration until flush" {
     const allocator = std.testing.allocator;
 
     const component = @import("../core/lifecycle.zig").component;
@@ -289,4 +299,219 @@ test "Observers.State.deinit: discards unflushed commands without applying them"
     queue.deinit(allocator);
 
     try std.testing.expectEqual(0, registry.observers.count());
+}
+
+test "dispatchOwnedEvent: runs a registered observer" {
+    const Event = @import("views/event.zig").Event;
+
+    const Damage = struct { amount: u32 };
+    const TestState = struct {
+        var seen: u32 = 0;
+    };
+    const onDamage = struct {
+        fn call(event: Event(Damage)) void {
+            TestState.seen = event.value.amount;
+        }
+    }.call;
+
+    var world = World.init(std.testing.allocator);
+    defer world.deinit(std.testing.allocator);
+
+    world.observers.add(std.testing.allocator, EventId.from(Damage), buildObserverEntry(onDamage, null));
+    Observers.fromWorld(std.testing.allocator, &world).dispatchOwnedEvent(std.testing.allocator, Damage{ .amount = 7 });
+
+    try std.testing.expectEqual(7, TestState.seen);
+}
+
+test "dispatchOwnedEvent: dispatches synchronously through Observers" {
+    const Event = @import("views/event.zig").Event;
+    const Systems = @import("systems.zig").Systems;
+
+    const allocator = std.testing.allocator;
+
+    const Damage = struct { amount: u32 };
+
+    const TestState = struct {
+        var seen: u32 = 0;
+        var ran_before_system_returned: bool = false;
+    };
+    TestState.seen = 0;
+    TestState.ran_before_system_returned = false;
+
+    const onDamage = struct {
+        fn call(event: Event(Damage)) void {
+            TestState.seen = event.value.amount;
+        }
+    }.call;
+    const system = struct {
+        fn call(observers: Observers) void {
+            observers.dispatchOwnedEvent(allocator, Damage{ .amount = 7 });
+            TestState.ran_before_system_returned = TestState.seen == 7;
+        }
+    }.call;
+
+    var world = World.init(allocator);
+    defer world.deinit(allocator);
+
+    world.observers.add(allocator, EventId.from(Damage), buildObserverEntry(onDamage, null));
+    Systems.fromWorld(allocator, &world).add(allocator, "update", system, null);
+
+    world.runSystems(allocator);
+
+    try std.testing.expectEqual(7, TestState.seen);
+    try std.testing.expect(TestState.ran_before_system_returned);
+}
+
+test "dispatchOwnedEvent: deinits the event once after every observer has seen it" {
+    const Event = @import("views/event.zig").Event;
+
+    const allocator = std.testing.allocator;
+
+    const TestState = struct {
+        var deinits: usize = 0;
+        var first: usize = 0;
+        var second: usize = 0;
+    };
+    const Message = struct {
+        text: []u8,
+
+        pub fn deinit(self: *@This(), event_allocator: std.mem.Allocator) void {
+            TestState.deinits += 1;
+            event_allocator.free(self.text);
+        }
+    };
+    TestState.deinits = 0;
+    TestState.first = 0;
+    TestState.second = 0;
+
+    const onFirst = struct {
+        fn call(event: Event(Message)) void {
+            TestState.first = event.value.text.len;
+        }
+    }.call;
+    const onSecond = struct {
+        fn call(event: Event(Message)) void {
+            TestState.second = event.value.text.len;
+        }
+    }.call;
+
+    var world = World.init(allocator);
+    defer world.deinit(allocator);
+
+    world.observers.add(allocator, EventId.from(Message), buildObserverEntry(onFirst, null));
+    world.observers.add(allocator, EventId.from(Message), buildObserverEntry(onSecond, null));
+
+    Observers.fromWorld(allocator, &world).dispatchOwnedEvent(allocator, Message{ .text = try allocator.alloc(u8, 4) });
+
+    try std.testing.expectEqual(4, TestState.first);
+    try std.testing.expectEqual(4, TestState.second);
+    try std.testing.expectEqual(1, TestState.deinits);
+}
+
+test "dispatchOwnedEvent: deinits an event that no observer is listening for" {
+    const allocator = std.testing.allocator;
+
+    const TestState = struct {
+        var deinits: usize = 0;
+    };
+    const Message = struct {
+        text: []u8,
+
+        pub fn deinit(self: *@This(), event_allocator: std.mem.Allocator) void {
+            TestState.deinits += 1;
+            event_allocator.free(self.text);
+        }
+    };
+    TestState.deinits = 0;
+
+    var world = World.init(allocator);
+    defer world.deinit(allocator);
+
+    Observers.fromWorld(allocator, &world).dispatchOwnedEvent(allocator, Message{ .text = try allocator.alloc(u8, 4) });
+
+    try std.testing.expectEqual(1, TestState.deinits);
+}
+
+test "dispatchOwnedEvent: leaves an event without deinit untouched" {
+    const Event = @import("views/event.zig").Event;
+
+    const allocator = std.testing.allocator;
+
+    const Message = struct { text: []u8 };
+
+    const TestState = struct {
+        var seen: usize = 0;
+    };
+    TestState.seen = 0;
+
+    const onMessage = struct {
+        fn call(event: Event(Message)) void {
+            TestState.seen = event.value.text.len;
+        }
+    }.call;
+
+    var world = World.init(allocator);
+    defer world.deinit(allocator);
+
+    world.observers.add(allocator, EventId.from(Message), buildObserverEntry(onMessage, null));
+
+    const text = try allocator.alloc(u8, 4);
+    defer allocator.free(text);
+
+    Observers.fromWorld(allocator, &world).dispatchOwnedEvent(allocator, Message{ .text = text });
+
+    try std.testing.expectEqual(4, TestState.seen);
+}
+
+test "dispatchOwnedEvent: deinits both events when an observer dispatches another" {
+    const Event = @import("views/event.zig").Event;
+
+    const allocator = std.testing.allocator;
+
+    const TestState = struct {
+        var order: [2]u8 = .{ 0, 0 };
+        var deinits: usize = 0;
+    };
+    TestState.order = .{ 0, 0 };
+    TestState.deinits = 0;
+
+    const Inner = struct {
+        text: []u8,
+
+        pub fn deinit(self: *@This(), event_allocator: std.mem.Allocator) void {
+            TestState.order[TestState.deinits] = 'i';
+            TestState.deinits += 1;
+            event_allocator.free(self.text);
+        }
+    };
+    const Outer = struct {
+        text: []u8,
+
+        pub fn deinit(self: *@This(), event_allocator: std.mem.Allocator) void {
+            TestState.order[TestState.deinits] = 'o';
+            TestState.deinits += 1;
+            event_allocator.free(self.text);
+        }
+    };
+
+    const onOuter = struct {
+        fn call(observers: Observers, inner: std.mem.Allocator, _: Event(Outer)) void {
+            const text = inner.alloc(u8, 8) catch panicOom("onOuter");
+            observers.dispatchOwnedEvent(inner, Inner{ .text = text });
+        }
+    }.call;
+    const onInner = struct {
+        fn call(_: Event(Inner)) void {}
+    }.call;
+
+    var world = World.init(allocator);
+    defer world.deinit(allocator);
+
+    world.observers.add(allocator, EventId.from(Outer), buildObserverEntry(onOuter, null));
+    world.observers.add(allocator, EventId.from(Inner), buildObserverEntry(onInner, null));
+
+    Observers.fromWorld(allocator, &world).dispatchOwnedEvent(allocator, Outer{ .text = try allocator.alloc(u8, 4) });
+
+    try std.testing.expectEqual(2, TestState.deinits);
+    try std.testing.expectEqual([2]u8{ 'i', 'o' }, TestState.order);
 }

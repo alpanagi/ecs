@@ -1,15 +1,15 @@
 const std = @import("std");
 
 const World = @import("../core/world.zig").World;
-const Event = @import("../params/views/event.zig").Event;
-const resolveParameter = @import("parameter.zig").resolveParameter;
+
 const resolveObserverParameter = @import("parameter.zig").resolveObserverParameter;
+const resolveParameter = @import("parameter.zig").resolveParameter;
 
-pub const SystemFunction = *const fn (*World, std.mem.Allocator) void;
-pub const ObserverFunction = *const fn (*World, std.mem.Allocator, *const anyopaque) void;
+const SystemFunction = *const fn (*World, std.mem.Allocator) void;
+const ObserverFunction = *const fn (*World, std.mem.Allocator, *const anyopaque) void;
 
-pub const PluginSystemFunction = *const fn (*anyopaque, std.mem.Allocator, *World) void;
-pub const PluginObserverFunction = *const fn (*anyopaque, std.mem.Allocator, *World, *const anyopaque) void;
+const PluginSystemFunction = *const fn (*anyopaque, std.mem.Allocator, *World) void;
+const PluginObserverFunction = *const fn (*anyopaque, std.mem.Allocator, *World, *const anyopaque) void;
 
 pub const SystemEntry = union(enum) {
     function: SystemFunction,
@@ -182,12 +182,12 @@ fn functionInfo(comptime F: type, comptime kind: []const u8) std.builtin.Type.Fn
 }
 
 test "SystemEntry.run: calls a plain function entry" {
-    const State = struct {
+    const TestState = struct {
         var calls: usize = 0;
     };
     const system = struct {
         fn call(_: std.mem.Allocator) void {
-            State.calls += 1;
+            TestState.calls += 1;
         }
     }.call;
 
@@ -196,7 +196,7 @@ test "SystemEntry.run: calls a plain function entry" {
 
     buildSystemEntry(system, null).run(std.testing.allocator, &world);
 
-    try std.testing.expectEqual(1, State.calls);
+    try std.testing.expectEqual(1, TestState.calls);
 }
 
 test "SystemEntry.run: calls a plugin entry through the bound plugin" {
@@ -221,13 +221,15 @@ test "SystemEntry.run: calls a plugin entry through the bound plugin" {
 }
 
 test "ObserverEntry.run: hands the payload to a plain function entry" {
+    const Event = @import("../params/views/event.zig").Event;
+
     const Damage = struct { amount: u32 };
-    const State = struct {
+    const TestState = struct {
         var seen: u32 = 0;
     };
     const observer = struct {
         fn call(event: Event(Damage)) void {
-            State.seen = event.value.amount;
+            TestState.seen = event.value.amount;
         }
     }.call;
 
@@ -237,10 +239,12 @@ test "ObserverEntry.run: hands the payload to a plain function entry" {
     const damage = Damage{ .amount = 7 };
     buildObserverEntry(observer, null).run(std.testing.allocator, &world, &damage);
 
-    try std.testing.expectEqual(7, State.seen);
+    try std.testing.expectEqual(7, TestState.seen);
 }
 
 test "ObserverEntry.run: hands the payload to a plugin entry" {
+    const Event = @import("../params/views/event.zig").Event;
+
     const Damage = struct { amount: u32 };
     const Plugin = struct {
         total: u32 = 0,
@@ -288,12 +292,12 @@ test "buildSystemEntry: binds the plugin pointer it was given" {
 }
 
 test "buildSystemEntry: resolves the parameters the system declares" {
-    const State = struct {
+    const TestState = struct {
         var seen_allocator: ?std.mem.Allocator = null;
     };
     const system = struct {
         fn call(allocator: std.mem.Allocator) void {
-            State.seen_allocator = allocator;
+            TestState.seen_allocator = allocator;
         }
     }.call;
 
@@ -302,16 +306,16 @@ test "buildSystemEntry: resolves the parameters the system declares" {
 
     buildSystemEntry(system, null).run(std.testing.allocator, &world);
 
-    try std.testing.expect(State.seen_allocator != null);
+    try std.testing.expect(TestState.seen_allocator != null);
 }
 
 test "buildSystemEntry: runs a system that declares no parameters" {
-    const State = struct {
+    const TestState = struct {
         var calls: usize = 0;
     };
     const system = struct {
         fn call() void {
-            State.calls += 1;
+            TestState.calls += 1;
         }
     }.call;
 
@@ -320,7 +324,7 @@ test "buildSystemEntry: runs a system that declares no parameters" {
 
     buildSystemEntry(system, null).run(std.testing.allocator, &world);
 
-    try std.testing.expectEqual(1, State.calls);
+    try std.testing.expectEqual(1, TestState.calls);
 }
 
 test "buildSystemEntry: gives a plugin system its receiver before other parameters" {
@@ -344,6 +348,8 @@ test "buildSystemEntry: gives a plugin system its receiver before other paramete
 }
 
 test "buildObserverEntry: builds a function entry when no plugin is given" {
+    const Event = @import("../params/views/event.zig").Event;
+
     const Damage = struct { amount: u32 };
     const observer = struct {
         fn call(_: Event(Damage)) void {}
@@ -353,6 +359,8 @@ test "buildObserverEntry: builds a function entry when no plugin is given" {
 }
 
 test "buildObserverEntry: binds the plugin pointer it was given" {
+    const Event = @import("../params/views/event.zig").Event;
+
     const Damage = struct { amount: u32 };
     const Plugin = struct {
         value: u32 = 0,
@@ -371,16 +379,18 @@ test "buildObserverEntry: binds the plugin pointer it was given" {
 }
 
 test "buildObserverEntry: resolves parameters beyond the event" {
+    const Event = @import("../params/views/event.zig").Event;
+
     const Damage = struct { amount: u32 };
-    const State = struct {
+    const TestState = struct {
         var seen_amount: u32 = 0;
         var seen_allocator: bool = false;
     };
     const observer = struct {
         fn call(allocator: std.mem.Allocator, event: Event(Damage)) void {
             _ = allocator;
-            State.seen_allocator = true;
-            State.seen_amount = event.value.amount;
+            TestState.seen_allocator = true;
+            TestState.seen_amount = event.value.amount;
         }
     }.call;
 
@@ -389,6 +399,6 @@ test "buildObserverEntry: resolves parameters beyond the event" {
 
     buildObserverEntry(observer, null).run(std.testing.allocator, &world, &Damage{ .amount = 5 });
 
-    try std.testing.expect(State.seen_allocator);
-    try std.testing.expectEqual(5, State.seen_amount);
+    try std.testing.expect(TestState.seen_allocator);
+    try std.testing.expectEqual(5, TestState.seen_amount);
 }

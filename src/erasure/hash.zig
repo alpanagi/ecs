@@ -6,7 +6,7 @@ pub fn hash(comptime T: type) u64 {
     return comptime hashBytes(@typeName(T));
 }
 
-pub fn hashBytes(bytes: []const u8) u64 {
+fn hashBytes(bytes: []const u8) u64 {
     return std.hash.Wyhash.hash(seed, bytes);
 }
 

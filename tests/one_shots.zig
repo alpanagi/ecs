@@ -25,20 +25,20 @@ const ResourceDestroying = ecs.events.ResourceDestroying;
 test "integration: a one-shot system registered through OneShots runs on the next frame" {
     const allocator = std.testing.allocator;
 
-    const State = struct {
+    const TestState = struct {
         var first_calls: usize = 0;
         var second_calls: usize = 0;
     };
-    State.first_calls = 0;
-    State.second_calls = 0;
+    TestState.first_calls = 0;
+    TestState.second_calls = 0;
 
     const Fixture = struct {
         fn second() void {
-            State.second_calls += 1;
+            TestState.second_calls += 1;
         }
 
         fn first(one_shots: OneShots) void {
-            State.first_calls += 1;
+            TestState.first_calls += 1;
             one_shots.add(allocator, second, null);
         }
     };
@@ -49,16 +49,16 @@ test "integration: a one-shot system registered through OneShots runs on the nex
     OneShots.fromWorld(allocator, &world).add(allocator, Fixture.first, null);
 
     world.runSystems(allocator);
-    try std.testing.expectEqual(1, State.first_calls);
-    try std.testing.expectEqual(0, State.second_calls);
+    try std.testing.expectEqual(1, TestState.first_calls);
+    try std.testing.expectEqual(0, TestState.second_calls);
 
     world.runSystems(allocator);
-    try std.testing.expectEqual(1, State.first_calls);
-    try std.testing.expectEqual(1, State.second_calls);
+    try std.testing.expectEqual(1, TestState.first_calls);
+    try std.testing.expectEqual(1, TestState.second_calls);
 
     world.runSystems(allocator);
-    try std.testing.expectEqual(1, State.first_calls);
-    try std.testing.expectEqual(1, State.second_calls);
+    try std.testing.expectEqual(1, TestState.first_calls);
+    try std.testing.expectEqual(1, TestState.second_calls);
 }
 
 test "integration: a one-shot system sees resources its plugin's build created through Resources" {
@@ -66,10 +66,10 @@ test "integration: a one-shot system sees resources its plugin's build created t
 
     const Config = struct { scale: f32 };
 
-    const State = struct {
+    const TestState = struct {
         var seen: ?f32 = null;
     };
-    State.seen = null;
+    TestState.seen = null;
 
     const Plugin = struct {
         pub fn build(_: *@This(), one_shots: OneShots, resources: Resources, inner: std.mem.Allocator) void {
@@ -78,7 +78,7 @@ test "integration: a one-shot system sees resources its plugin's build created t
         }
 
         fn startup(config: Resource(Config)) void {
-            State.seen = config.value.scale;
+            TestState.seen = config.value.scale;
         }
     };
 
@@ -88,7 +88,7 @@ test "integration: a one-shot system sees resources its plugin's build created t
     world.addOwnedPlugin(allocator, Plugin{});
     world.runSystems(allocator);
 
-    try std.testing.expectEqual(@as(f32, 2), State.seen.?);
+    try std.testing.expectEqual(@as(f32, 2), TestState.seen.?);
 }
 
 test "integration: a one-shot system sees resources another plugin's build created" {
@@ -96,10 +96,10 @@ test "integration: a one-shot system sees resources another plugin's build creat
 
     const Config = struct { scale: f32 };
 
-    const State = struct {
+    const TestState = struct {
         var seen: ?f32 = null;
     };
-    State.seen = null;
+    TestState.seen = null;
 
     const Provider = struct {
         pub fn build(_: *@This(), resources: Resources, inner: std.mem.Allocator) void {
@@ -112,7 +112,7 @@ test "integration: a one-shot system sees resources another plugin's build creat
         }
 
         fn startup(config: Resource(Config)) void {
-            State.seen = config.value.scale;
+            TestState.seen = config.value.scale;
         }
     };
 
@@ -124,7 +124,7 @@ test "integration: a one-shot system sees resources another plugin's build creat
 
     world.runSystems(allocator);
 
-    try std.testing.expectEqual(@as(f32, 3), State.seen.?);
+    try std.testing.expectEqual(@as(f32, 3), TestState.seen.?);
 }
 
 test "integration: a one-shot system sees entities its plugin's build spawned through Entities" {
@@ -132,10 +132,10 @@ test "integration: a one-shot system sees entities its plugin's build spawned th
 
     const Position = struct { x: f32, y: f32 };
 
-    const State = struct {
+    const TestState = struct {
         var seen: usize = 0;
     };
-    State.seen = 0;
+    TestState.seen = 0;
 
     const Plugin = struct {
         pub fn build(_: *@This(), entities: Entities, one_shots: OneShots, inner: std.mem.Allocator) void {
@@ -145,7 +145,7 @@ test "integration: a one-shot system sees entities its plugin's build spawned th
 
         fn startup(positions: Query(&.{Position})) void {
             var it = positions.iterator();
-            while (it.next()) |_| State.seen += 1;
+            while (it.next()) |_| TestState.seen += 1;
         }
     };
 
@@ -155,5 +155,5 @@ test "integration: a one-shot system sees entities its plugin's build spawned th
     world.addOwnedPlugin(allocator, Plugin{});
     world.runSystems(allocator);
 
-    try std.testing.expectEqual(1, State.seen);
+    try std.testing.expectEqual(1, TestState.seen);
 }
