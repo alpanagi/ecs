@@ -3,24 +3,16 @@ const std = @import("std");
 const ecs = @import("ecs");
 
 const World = ecs.World;
-const Entity = ecs.Entity;
-const Query = ecs.Query;
 const Entities = ecs.Entities;
 const Resources = ecs.Resources;
 const Systems = ecs.Systems;
 const Observers = ecs.Observers;
-const OneShots = ecs.OneShots;
 const Resource = ecs.Resource;
 const Event = ecs.Event;
-const EventId = ecs.EventId;
-const Error = ecs.Error;
-const componentId = ecs.componentId;
-const component_events = ecs.events.component;
-const resource_events = ecs.events.resource;
-const ComponentAdded = ecs.events.ComponentAdded;
-const ComponentDestroying = ecs.events.ComponentDestroying;
 const ResourceAdded = ecs.events.ResourceAdded;
 const ResourceDestroying = ecs.events.ResourceDestroying;
+const resourceAdded = ecs.events.resourceAdded;
+const resourceDestroying = ecs.events.resourceDestroying;
 
 test "integration: a resource removed through Resources stays readable for the rest of the group" {
     const allocator = std.testing.allocator;
@@ -122,7 +114,7 @@ test "integration: a resource Added observer can already read the resource" {
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    Observers.fromWorld(allocator, &world).add(allocator, resource_events.added(Config), onAdded, null);
+    Observers.fromWorld(allocator, &world).add(allocator, resourceAdded(Config), onAdded, null);
     Resources.fromWorld(allocator, &world).addOwned(allocator, Config, .{ .scale = 3 });
 
     world.runSystems(allocator);
@@ -149,7 +141,7 @@ test "integration: a resource added through Resources fires Added at the flush" 
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    Observers.fromWorld(allocator, &world).add(allocator, resource_events.added(Config), onAdded, null);
+    Observers.fromWorld(allocator, &world).add(allocator, resourceAdded(Config), onAdded, null);
     Resources.fromWorld(allocator, &world).addOwned(allocator, Config, .{ .scale = 1 });
     try std.testing.expectEqual(0, TestState.calls);
 
@@ -177,7 +169,7 @@ test "integration: a resource removed through Resources fires Destroying at the 
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    Observers.fromWorld(allocator, &world).add(allocator, resource_events.destroying(Config), onDestroying, null);
+    Observers.fromWorld(allocator, &world).add(allocator, resourceDestroying(Config), onDestroying, null);
     world.resources.addOwned(&world, allocator, Config, .{ .scale = 1 });
 
     Resources.fromWorld(allocator, &world).remove(allocator, Config);

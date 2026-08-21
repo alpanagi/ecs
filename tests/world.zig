@@ -3,24 +3,9 @@ const std = @import("std");
 const ecs = @import("ecs");
 
 const World = ecs.World;
-const Entity = ecs.Entity;
-const Query = ecs.Query;
 const Entities = ecs.Entities;
-const Resources = ecs.Resources;
-const Systems = ecs.Systems;
 const Observers = ecs.Observers;
-const OneShots = ecs.OneShots;
-const Resource = ecs.Resource;
 const Event = ecs.Event;
-const EventId = ecs.EventId;
-const Error = ecs.Error;
-const componentId = ecs.componentId;
-const component_events = ecs.events.component;
-const resource_events = ecs.events.resource;
-const ComponentAdded = ecs.events.ComponentAdded;
-const ComponentDestroying = ecs.events.ComponentDestroying;
-const ResourceAdded = ecs.events.ResourceAdded;
-const ResourceDestroying = ecs.events.ResourceDestroying;
 
 test "integration: a plugin's build can register an observer through Entities" {
     const Damage = struct { amount: u32 };
@@ -28,7 +13,7 @@ test "integration: a plugin's build can register an observer through Entities" {
         total: u32 = 0,
 
         pub fn build(self: *@This(), observers: Observers, allocator: std.mem.Allocator) void {
-            observers.add(allocator, EventId.from(Damage), onDamage, self);
+            observers.add(allocator, ecs.eventId(Damage), onDamage, self);
         }
 
         fn onDamage(self: *@This(), event: Event(Damage)) void {

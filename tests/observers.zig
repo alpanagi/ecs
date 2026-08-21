@@ -6,21 +6,11 @@ const World = ecs.World;
 const Entity = ecs.Entity;
 const Query = ecs.Query;
 const Entities = ecs.Entities;
-const Resources = ecs.Resources;
 const Systems = ecs.Systems;
 const Observers = ecs.Observers;
-const OneShots = ecs.OneShots;
-const Resource = ecs.Resource;
 const Event = ecs.Event;
-const EventId = ecs.EventId;
-const Error = ecs.Error;
-const componentId = ecs.componentId;
-const component_events = ecs.events.component;
-const resource_events = ecs.events.resource;
 const ComponentAdded = ecs.events.ComponentAdded;
-const ComponentDestroying = ecs.events.ComponentDestroying;
-const ResourceAdded = ecs.events.ResourceAdded;
-const ResourceDestroying = ecs.events.ResourceDestroying;
+const componentAdded = ecs.events.componentAdded;
 
 test "integration: an observer registering observers for its own event does not disturb the running dispatch" {
     const allocator = std.testing.allocator;
@@ -49,7 +39,7 @@ test "integration: an observer registering observers for its own event does not 
             TestState.registrar_calls += 1;
             if (TestState.registered) return;
             TestState.registered = true;
-            for (0..observer_count) |_| observers.add(allocator, EventId.from(Damage), added, null);
+            for (0..observer_count) |_| observers.add(allocator, ecs.eventId(Damage), added, null);
         }
 
         fn bystander(_: Event(Damage)) void {
@@ -60,8 +50,8 @@ test "integration: an observer registering observers for its own event does not 
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    Observers.fromWorld(allocator, &world).add(allocator, EventId.from(Damage), Handlers.registrar, null);
-    Observers.fromWorld(allocator, &world).add(allocator, EventId.from(Damage), Handlers.bystander, null);
+    Observers.fromWorld(allocator, &world).add(allocator, ecs.eventId(Damage), Handlers.registrar, null);
+    Observers.fromWorld(allocator, &world).add(allocator, ecs.eventId(Damage), Handlers.bystander, null);
 
     world.runSystems(allocator);
 
@@ -105,7 +95,7 @@ test "integration: an observer reached through Observers.dispatchOwnedEvent can 
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    Observers.fromWorld(allocator, &world).add(allocator, EventId.from(Spawned), onSpawned, null);
+    Observers.fromWorld(allocator, &world).add(allocator, ecs.eventId(Spawned), onSpawned, null);
     Systems.fromWorld(allocator, &world).add(allocator, "update", system, null);
 
     world.runSystems(allocator);
@@ -138,7 +128,7 @@ test "integration: an observer reached through Observers.dispatchOwnedEvent can 
             TestState.registrar_calls += 1;
             if (TestState.registered) return;
             TestState.registered = true;
-            for (0..16) |_| observers.add(allocator, EventId.from(Damage), added, null);
+            for (0..16) |_| observers.add(allocator, ecs.eventId(Damage), added, null);
         }
     };
     const system = struct {
@@ -150,7 +140,7 @@ test "integration: an observer reached through Observers.dispatchOwnedEvent can 
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    Observers.fromWorld(allocator, &world).add(allocator, EventId.from(Damage), Handlers.registrar, null);
+    Observers.fromWorld(allocator, &world).add(allocator, ecs.eventId(Damage), Handlers.registrar, null);
     Systems.fromWorld(allocator, &world).add(allocator, "update", system, null);
 
     world.runSystems(allocator);
@@ -177,7 +167,7 @@ test "integration: a spawn through Entities triggers Added at the flush" {
     var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
 
-    Observers.fromWorld(std.testing.allocator, &world).add(std.testing.allocator, component_events.added(Position), onPositionAdded, null);
+    Observers.fromWorld(std.testing.allocator, &world).add(std.testing.allocator, componentAdded(Position), onPositionAdded, null);
     Entities.fromWorld(std.testing.allocator, &world).spawnOwned(std.testing.allocator, .{Position{ .x = 1, .y = 2 }});
     try std.testing.expectEqual(null, TestState.added_entity);
 

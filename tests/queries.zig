@@ -6,21 +6,8 @@ const World = ecs.World;
 const Entity = ecs.Entity;
 const Query = ecs.Query;
 const Entities = ecs.Entities;
-const Resources = ecs.Resources;
 const Systems = ecs.Systems;
-const Observers = ecs.Observers;
-const OneShots = ecs.OneShots;
 const Resource = ecs.Resource;
-const Event = ecs.Event;
-const EventId = ecs.EventId;
-const Error = ecs.Error;
-const componentId = ecs.componentId;
-const component_events = ecs.events.component;
-const resource_events = ecs.events.resource;
-const ComponentAdded = ecs.events.ComponentAdded;
-const ComponentDestroying = ecs.events.ComponentDestroying;
-const ResourceAdded = ecs.events.ResourceAdded;
-const ResourceDestroying = ecs.events.ResourceDestroying;
 
 test "integration: a system can take a query as a parameter" {
     const allocator = std.testing.allocator;

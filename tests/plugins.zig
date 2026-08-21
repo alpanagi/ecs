@@ -3,24 +3,13 @@ const std = @import("std");
 const ecs = @import("ecs");
 
 const World = ecs.World;
-const Entity = ecs.Entity;
 const Query = ecs.Query;
-const Entities = ecs.Entities;
 const Resources = ecs.Resources;
 const Systems = ecs.Systems;
 const Observers = ecs.Observers;
 const OneShots = ecs.OneShots;
 const Resource = ecs.Resource;
 const Event = ecs.Event;
-const EventId = ecs.EventId;
-const Error = ecs.Error;
-const componentId = ecs.componentId;
-const component_events = ecs.events.component;
-const resource_events = ecs.events.resource;
-const ComponentAdded = ecs.events.ComponentAdded;
-const ComponentDestroying = ecs.events.ComponentDestroying;
-const ResourceAdded = ecs.events.ResourceAdded;
-const ResourceDestroying = ecs.events.ResourceDestroying;
 
 test "integration: a plugin system and observer can declare parameters beyond the receiver" {
     const allocator = std.testing.allocator;
@@ -38,7 +27,7 @@ test "integration: a plugin system and observer can declare parameters beyond th
 
         pub fn build(self: *@This(), observers: Observers, systems: Systems, inner: std.mem.Allocator) void {
             systems.add(inner, "update", move, self);
-            observers.add(inner, EventId.from(Damage), onDamage, self);
+            observers.add(inner, ecs.eventId(Damage), onDamage, self);
         }
 
         fn move(self: *@This(), query: Query(&.{Position})) void {
@@ -273,7 +262,7 @@ test "integration: a plugin's build can register systems, one-shot systems and o
         ) void {
             systems.add(inner, "update", update, self);
             one_shots.add(inner, setup, self);
-            observers.add(inner, EventId.from(Damage), onDamage, self);
+            observers.add(inner, ecs.eventId(Damage), onDamage, self);
         }
 
         fn update(self: *@This()) void {

@@ -1,18 +1,17 @@
-const resource_events = @import("../core/lifecycle.zig").resource;
 const std = @import("std");
 const util = @import("../utils.zig");
 
 const DeinitFunction = @import("../erasure/deinit.zig").DeinitFunction;
 const DestroyFunction = @import("../erasure/deinit.zig").DestroyFunction;
-const ResourceAdded = @import("../core/lifecycle.zig").ResourceAdded;
-const ResourceDestroying = @import("../core/lifecycle.zig").ResourceDestroying;
+const ResourceAdded = @import("../events/resource.zig").ResourceAdded;
+const ResourceDestroying = @import("../events/resource.zig").ResourceDestroying;
 const ValueFunctions = @import("../erasure/value.zig").ValueFunctions;
 const World = @import("../core/world.zig").World;
 
 const getDeinitFunction = @import("../erasure/deinit.zig").getDeinitFunction;
 const getDestroyFunction = @import("../erasure/deinit.zig").getDestroyFunction;
-const hash = @import("../erasure/hash.zig").hash;
 const panicOom = @import("../utils.zig").panicOom;
+const resourceId = @import("../core/resource.zig").resourceId;
 
 pub const Resources = struct {
     pub const State = ResourcesState;
@@ -39,14 +38,6 @@ pub const Resources = struct {
 };
 
 const RemoveFunction = *const fn (*World, std.mem.Allocator) void;
-
-const Pending = union(enum) {
-    add: struct {
-        data: *anyopaque,
-        functions: ValueFunctions,
-    },
-    remove: RemoveFunction,
-};
 
 const ResourcesState = struct {
     resources: std.AutoArrayHashMapUnmanaged(u64, ResourceEntry) = .empty,
@@ -110,7 +101,7 @@ const ResourcesState = struct {
         const resource = allocator.create(T) catch util.panicOom("ResourcesState.addResource");
         resource.* = value;
 
-        const gop = self.resources.getOrPut(allocator, hash(T)) catch
+        const gop = self.resources.getOrPut(allocator, resourceId(T)) catch
             util.panicOom("ResourcesState.addResource");
 
         if (gop.found_existing) gop.value_ptr.release(allocator);
@@ -122,7 +113,7 @@ const ResourcesState = struct {
     }
 
     pub fn get(self: *const ResourcesState, comptime T: type) ?*T {
-        const entry = self.resources.get(hash(T)) orelse return null;
+        const entry = self.resources.get(resourceId(T)) orelse return null;
         return @ptrCast(@alignCast(entry.value));
     }
 
@@ -135,23 +126,31 @@ const ResourcesState = struct {
     ) void {
         const replacing = self.get(T) != null;
         if (replacing) {
-            world.observers.dispatchEventById(allocator, world, resource_events.destroying(T), &ResourceDestroying{});
+            world.observers.dispatchOwnedEvent(allocator, world, ResourceDestroying{ .resource_id = resourceId(T) });
         }
 
         self.addResource(allocator, T, value);
 
-        world.observers.dispatchEventById(allocator, world, resource_events.added(T), &ResourceAdded{});
+        world.observers.dispatchOwnedEvent(allocator, world, ResourceAdded{ .resource_id = resourceId(T) });
     }
 
     pub fn remove(self: *ResourcesState, world: *World, allocator: std.mem.Allocator, comptime T: type) void {
         if (self.get(T) == null) return;
 
-        world.observers.dispatchEventById(allocator, world, resource_events.destroying(T), &ResourceDestroying{});
+        world.observers.dispatchOwnedEvent(allocator, world, ResourceDestroying{ .resource_id = resourceId(T) });
 
-        if (self.resources.fetchSwapRemove(hash(T))) |removed| {
+        if (self.resources.fetchSwapRemove(resourceId(T))) |removed| {
             removed.value.release(allocator);
         }
     }
+};
+
+const Pending = union(enum) {
+    add: struct {
+        data: *anyopaque,
+        functions: ValueFunctions,
+    },
+    remove: RemoveFunction,
 };
 
 const ResourceEntry = struct {
@@ -477,6 +476,7 @@ test "addOwned: triggers ResourceAdded" {
     const Event = @import("views/event.zig").Event;
 
     const buildObserverEntry = @import("../erasure/system_entry.zig").buildObserverEntry;
+    const resourceAdded = @import("../events/resource.zig").resourceAdded;
 
     const allocator = std.testing.allocator;
 
@@ -496,7 +496,7 @@ test "addOwned: triggers ResourceAdded" {
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    world.observers.add(allocator, resource_events.added(Config), buildObserverEntry(onAdded, null));
+    world.observers.add(allocator, resourceAdded(Config), buildObserverEntry(onAdded, null));
     world.resources.addOwned(&world, allocator, Config, .{ .scale = 1 });
 
     try std.testing.expectEqual(1, TestState.calls);
@@ -507,6 +507,8 @@ test "addOwned: triggers Destroying for the old value then Added for the new" {
     const Resource = @import("views/resource.zig").Resource;
 
     const buildObserverEntry = @import("../erasure/system_entry.zig").buildObserverEntry;
+    const resourceAdded = @import("../events/resource.zig").resourceAdded;
+    const resourceDestroying = @import("../events/resource.zig").resourceDestroying;
 
     const allocator = std.testing.allocator;
 
@@ -539,8 +541,8 @@ test "addOwned: triggers Destroying for the old value then Added for the new" {
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    world.observers.add(allocator, resource_events.added(Config), buildObserverEntry(Handlers.onAdded, null));
-    world.observers.add(allocator, resource_events.destroying(Config), buildObserverEntry(Handlers.onDestroying, null));
+    world.observers.add(allocator, resourceAdded(Config), buildObserverEntry(Handlers.onAdded, null));
+    world.observers.add(allocator, resourceDestroying(Config), buildObserverEntry(Handlers.onDestroying, null));
 
     world.resources.addOwned(&world, allocator, Config, .{ .scale = 1 });
     world.resources.addOwned(&world, allocator, Config, .{ .scale = 2 });
@@ -551,12 +553,12 @@ test "addOwned: triggers Destroying for the old value then Added for the new" {
 }
 
 test "addOwned: does not trigger component events for the same type" {
-    const component_events = @import("../core/lifecycle.zig").component;
-
-    const ComponentAdded = @import("../core/lifecycle.zig").ComponentAdded;
+    const ComponentAdded = @import("../events/component.zig").ComponentAdded;
     const Event = @import("views/event.zig").Event;
 
     const buildObserverEntry = @import("../erasure/system_entry.zig").buildObserverEntry;
+    const componentAdded = @import("../events/component.zig").componentAdded;
+    const resourceAdded = @import("../events/resource.zig").resourceAdded;
 
     const allocator = std.testing.allocator;
 
@@ -582,8 +584,8 @@ test "addOwned: does not trigger component events for the same type" {
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    world.observers.add(allocator, resource_events.added(Shared), buildObserverEntry(Handlers.onResource, null));
-    world.observers.add(allocator, component_events.added(Shared), buildObserverEntry(Handlers.onComponent, null));
+    world.observers.add(allocator, resourceAdded(Shared), buildObserverEntry(Handlers.onResource, null));
+    world.observers.add(allocator, componentAdded(Shared), buildObserverEntry(Handlers.onComponent, null));
 
     _ = world.entities.spawnOwned(&world, allocator, .{Shared{ .value = 1 }});
     try std.testing.expectEqual(1, TestState.component_added);
@@ -619,6 +621,7 @@ test "remove: triggers ResourceDestroying while the value is readable" {
     const Resource = @import("views/resource.zig").Resource;
 
     const buildObserverEntry = @import("../erasure/system_entry.zig").buildObserverEntry;
+    const resourceDestroying = @import("../events/resource.zig").resourceDestroying;
 
     const allocator = std.testing.allocator;
 
@@ -638,7 +641,7 @@ test "remove: triggers ResourceDestroying while the value is readable" {
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    world.observers.add(allocator, resource_events.destroying(Config), buildObserverEntry(onDestroying, null));
+    world.observers.add(allocator, resourceDestroying(Config), buildObserverEntry(onDestroying, null));
     world.resources.addOwned(&world, allocator, Config, .{ .scale = 5 });
     world.resources.remove(&world, allocator, Config);
 
@@ -650,6 +653,7 @@ test "remove: triggers nothing for an absent resource" {
     const Event = @import("views/event.zig").Event;
 
     const buildObserverEntry = @import("../erasure/system_entry.zig").buildObserverEntry;
+    const resourceDestroying = @import("../events/resource.zig").resourceDestroying;
 
     const allocator = std.testing.allocator;
 
@@ -669,7 +673,7 @@ test "remove: triggers nothing for an absent resource" {
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    world.observers.add(allocator, resource_events.destroying(Config), buildObserverEntry(onDestroying, null));
+    world.observers.add(allocator, resourceDestroying(Config), buildObserverEntry(onDestroying, null));
     world.resources.remove(&world, allocator, Config);
 
     try std.testing.expectEqual(0, TestState.calls);

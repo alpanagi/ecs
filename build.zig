@@ -27,10 +27,10 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    const unit_step = b.step("test:unit", "Run the unit tests");
+    const unit_step = b.step("test:unit", "Run unit tests");
     unit_step.dependOn(&b.addRunArtifact(unit).step);
 
-    const integration_step = b.step("test:integration", "Run the integration tests");
+    const integration_step = b.step("test:integration", "Run integration tests");
     integration_step.dependOn(&b.addRunArtifact(integration).step);
 
     const test_step = b.step("test", "Run all tests");

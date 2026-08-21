@@ -59,6 +59,7 @@ pub fn buildSystemEntry(comptime function: anytype, plugin: anytype) SystemEntry
 
 pub fn buildObserverEntry(comptime function: anytype, plugin: anytype) ObserverEntry {
     validateReturnsVoid(@TypeOf(function), "observer");
+    validateSingleEvent(@TypeOf(function));
 
     if (comptime @TypeOf(plugin) == @TypeOf(null)) {
         return .{ .function = observerInvoker(function) };
@@ -87,6 +88,19 @@ fn validatePluginReceiver(comptime Plugin: type, comptime Function: type, compti
 
     const Receiver = info.params[0].type orelse @compileError(error_message);
     if (Receiver != *Plugin) @compileError(error_message);
+}
+
+fn validateSingleEvent(comptime Function: type) void {
+    comptime var seen: ?type = null;
+    inline for (functionInfo(Function, "observer").params) |param| {
+        const P = param.type orelse continue;
+        if (comptime @typeInfo(P) != .@"struct") continue;
+        if (comptime !@hasDecl(P, "fromEvent")) continue;
+        if (comptime seen) |first| @compileError(
+            "an observer takes a single event, found " ++ @typeName(first) ++ " and " ++ @typeName(P),
+        );
+        seen = P;
+    }
 }
 
 fn systemInvoker(comptime function: anytype) SystemFunction {

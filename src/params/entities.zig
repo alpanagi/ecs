@@ -1,28 +1,20 @@
-const component_events = @import("../core/lifecycle.zig").component;
 const std = @import("std");
 
 const Archetype = @import("../core/archetype.zig").Archetype;
-const ComponentAdded = @import("../core/lifecycle.zig").ComponentAdded;
+const ComponentAdded = @import("../events/component.zig").ComponentAdded;
 const ComponentData = @import("../core/component.zig").ComponentData;
+const ComponentDestroying = @import("../events/component.zig").ComponentDestroying;
 const ComponentDescriptor = @import("../core/component.zig").ComponentDescriptor;
-const ComponentDestroying = @import("../core/lifecycle.zig").ComponentDestroying;
 const Entity = @import("../core/entity.zig").Entity;
 const ValueFunctions = @import("../erasure/value.zig").ValueFunctions;
 const World = @import("../core/world.zig").World;
 
+const componentId = @import("../core/component.zig").componentId;
 const componentTypes = @import("../core/component.zig").componentTypes;
 const getDeinitFunction = @import("../erasure/deinit.zig").getDeinitFunction;
 const getDestroyFunction = @import("../erasure/deinit.zig").getDestroyFunction;
 const panic = @import("../utils.zig").panic;
 const panicOom = @import("../utils.zig").panicOom;
-
-const Pending = union(enum) {
-    spawn: struct {
-        data: *anyopaque,
-        functions: ValueFunctions,
-    },
-    despawn: Entity,
-};
 
 pub const Entities = struct {
     pub const State = EntitiesState;
@@ -113,12 +105,11 @@ const EntitiesState = struct {
         world.entity_descriptors.items[id].archetype = archetype_id;
         world.entity_descriptors.items[id].row = row;
 
-        inline for (types, 0..) |Component, index| {
-            world.observers.dispatchEventById(
+        inline for (types) |Component| {
+            world.observers.dispatchOwnedEvent(
                 allocator,
                 world,
-                component_events.added(Component),
-                &ComponentAdded{ .entity = entity, .component = descriptors[index].id },
+                ComponentAdded{ .entity = entity, .component_id = componentId(Component) },
             );
         }
 
@@ -165,6 +156,14 @@ const EntitiesState = struct {
             .functions = functions,
         } }) catch panicOom("EntitiesState.queue");
     }
+};
+
+const Pending = union(enum) {
+    spawn: struct {
+        data: *anyopaque,
+        functions: ValueFunctions,
+    },
+    despawn: Entity,
 };
 
 fn spawnFunctions(comptime Components: type) ValueFunctions {
@@ -226,11 +225,10 @@ fn triggerComponentDestroying(
     entity: Entity,
     component_id: u64,
 ) void {
-    world.observers.dispatchEventById(
+    world.observers.dispatchOwnedEvent(
         allocator,
         world,
-        component_events.destroyingById(component_id),
-        &ComponentDestroying{ .entity = entity, .component = component_id },
+        ComponentDestroying{ .entity = entity, .component_id = component_id },
     );
 }
 
@@ -792,6 +790,7 @@ test "spawnOwned: triggers ComponentAdded for each component" {
     const Event = @import("views/event.zig").Event;
 
     const buildObserverEntry = @import("../erasure/system_entry.zig").buildObserverEntry;
+    const componentAdded = @import("../events/component.zig").componentAdded;
 
     const allocator = std.testing.allocator;
 
@@ -816,8 +815,8 @@ test "spawnOwned: triggers ComponentAdded for each component" {
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    world.observers.add(allocator, component_events.added(Position), buildObserverEntry(onPositionAdded, null));
-    world.observers.add(allocator, component_events.added(Velocity), buildObserverEntry(onVelocityAdded, null));
+    world.observers.add(allocator, componentAdded(Position), buildObserverEntry(onPositionAdded, null));
+    world.observers.add(allocator, componentAdded(Velocity), buildObserverEntry(onVelocityAdded, null));
 
     const entity = world.entities.spawnOwned(&world, allocator, .{ Position{ .x = 1, .y = 2 }, Velocity{ .dx = 3, .dy = 4 } });
 
@@ -829,6 +828,7 @@ test "spawnOwned: triggers nothing for a component with no observer" {
     const Event = @import("views/event.zig").Event;
 
     const buildObserverEntry = @import("../erasure/system_entry.zig").buildObserverEntry;
+    const componentAdded = @import("../events/component.zig").componentAdded;
 
     const allocator = std.testing.allocator;
 
@@ -847,7 +847,7 @@ test "spawnOwned: triggers nothing for a component with no observer" {
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    world.observers.add(allocator, component_events.added(Position), buildObserverEntry(onPositionAdded, null));
+    world.observers.add(allocator, componentAdded(Position), buildObserverEntry(onPositionAdded, null));
 
     _ = world.entities.spawnOwned(&world, allocator, .{Velocity{ .dx = 1, .dy = 1 }});
 
@@ -858,6 +858,8 @@ test "spawnOwned: triggers lifecycle events for a marker component" {
     const Event = @import("views/event.zig").Event;
 
     const buildObserverEntry = @import("../erasure/system_entry.zig").buildObserverEntry;
+    const componentAdded = @import("../events/component.zig").componentAdded;
+    const componentDestroying = @import("../events/component.zig").componentDestroying;
 
     const allocator = std.testing.allocator;
 
@@ -883,8 +885,8 @@ test "spawnOwned: triggers lifecycle events for a marker component" {
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    world.observers.add(allocator, component_events.added(Player), buildObserverEntry(Handlers.onAdded, null));
-    world.observers.add(allocator, component_events.destroying(Player), buildObserverEntry(Handlers.onDestroying, null));
+    world.observers.add(allocator, componentAdded(Player), buildObserverEntry(Handlers.onAdded, null));
+    world.observers.add(allocator, componentDestroying(Player), buildObserverEntry(Handlers.onDestroying, null));
 
     const entity = world.entities.spawnOwned(&world, allocator, .{Player{}});
     try std.testing.expectEqual(1, TestState.added);
@@ -1005,6 +1007,7 @@ test "despawn: triggers ComponentDestroying for each component" {
     const Event = @import("views/event.zig").Event;
 
     const buildObserverEntry = @import("../erasure/system_entry.zig").buildObserverEntry;
+    const componentDestroying = @import("../events/component.zig").componentDestroying;
 
     const allocator = std.testing.allocator;
 
@@ -1022,7 +1025,7 @@ test "despawn: triggers ComponentDestroying for each component" {
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    world.observers.add(allocator, component_events.destroying(Position), buildObserverEntry(onPositionDestroying, null));
+    world.observers.add(allocator, componentDestroying(Position), buildObserverEntry(onPositionDestroying, null));
 
     const entity = world.entities.spawnOwned(&world, allocator, .{Position{ .x = 1, .y = 2 }});
     world.entities.despawn(&world, allocator, entity);
@@ -1035,6 +1038,7 @@ test "despawn: triggers ComponentDestroying while the component is readable" {
     const Query = @import("views/query.zig").Query;
 
     const buildObserverEntry = @import("../erasure/system_entry.zig").buildObserverEntry;
+    const componentDestroying = @import("../events/component.zig").componentDestroying;
 
     const allocator = std.testing.allocator;
 
@@ -1053,7 +1057,7 @@ test "despawn: triggers ComponentDestroying while the component is readable" {
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    world.observers.add(allocator, component_events.destroying(Position), buildObserverEntry(onPositionDestroying, null));
+    world.observers.add(allocator, componentDestroying(Position), buildObserverEntry(onPositionDestroying, null));
 
     const entity = world.entities.spawnOwned(&world, allocator, .{Position{ .x = 1, .y = 2 }});
     world.entities.despawn(&world, allocator, entity);

@@ -49,7 +49,7 @@ const PluginsState = struct {
 
         comptime {
             if (@typeInfo(T) != .@"struct") {
-                @compileError("a plugin must be a struct value, got " ++ name);
+                @compileError("a plugin must be a struct value, found " ++ name);
             }
 
             if (!std.meta.hasFn(T, "build")) @compileError(name ++ " must declare build");
