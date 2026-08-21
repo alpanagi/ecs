@@ -49,7 +49,7 @@ test "integration: an observer registering observers for its own event does not 
             State.registrar_calls += 1;
             if (State.registered) return;
             State.registered = true;
-            for (0..observer_count) |_| observers.addObserver(allocator, EventId.from(Damage), added, null);
+            for (0..observer_count) |_| observers.add(allocator, EventId.from(Damage), added, null);
         }
 
         fn bystander(_: Event(Damage)) void {
@@ -60,8 +60,8 @@ test "integration: an observer registering observers for its own event does not 
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    Observers.fromWorld(allocator, &world).addObserver(allocator, EventId.from(Damage), Handlers.registrar, null);
-    Observers.fromWorld(allocator, &world).addObserver(allocator, EventId.from(Damage), Handlers.bystander, null);
+    Observers.fromWorld(allocator, &world).add(allocator, EventId.from(Damage), Handlers.registrar, null);
+    Observers.fromWorld(allocator, &world).add(allocator, EventId.from(Damage), Handlers.bystander, null);
 
     world.runSystems(allocator);
 
@@ -105,8 +105,8 @@ test "integration: an observer reached through Observers.dispatchOwnedEvent can 
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    Observers.fromWorld(allocator, &world).addObserver(allocator, EventId.from(Spawned), onSpawned, null);
-    Systems.fromWorld(allocator, &world).addSystem(allocator, "update", system, null);
+    Observers.fromWorld(allocator, &world).add(allocator, EventId.from(Spawned), onSpawned, null);
+    Systems.fromWorld(allocator, &world).add(allocator, "update", system, null);
 
     world.runSystems(allocator);
 
@@ -138,7 +138,7 @@ test "integration: an observer reached through Observers.dispatchOwnedEvent can 
             State.registrar_calls += 1;
             if (State.registered) return;
             State.registered = true;
-            for (0..16) |_| observers.addObserver(allocator, EventId.from(Damage), added, null);
+            for (0..16) |_| observers.add(allocator, EventId.from(Damage), added, null);
         }
     };
     const system = struct {
@@ -150,8 +150,8 @@ test "integration: an observer reached through Observers.dispatchOwnedEvent can 
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    Observers.fromWorld(allocator, &world).addObserver(allocator, EventId.from(Damage), Handlers.registrar, null);
-    Systems.fromWorld(allocator, &world).addSystem(allocator, "update", system, null);
+    Observers.fromWorld(allocator, &world).add(allocator, EventId.from(Damage), Handlers.registrar, null);
+    Systems.fromWorld(allocator, &world).add(allocator, "update", system, null);
 
     world.runSystems(allocator);
     try std.testing.expectEqual(1, State.registrar_calls);
@@ -177,7 +177,7 @@ test "integration: a spawn through Entities triggers Added at the flush" {
     var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
 
-    Observers.fromWorld(std.testing.allocator, &world).addObserver(std.testing.allocator, component_events.added(Position), onPositionAdded, null);
+    Observers.fromWorld(std.testing.allocator, &world).add(std.testing.allocator, component_events.added(Position), onPositionAdded, null);
     Entities.fromWorld(std.testing.allocator, &world).spawnOwned(std.testing.allocator, .{Position{ .x = 1, .y = 2 }});
     try std.testing.expectEqual(null, State.added_entity);
 

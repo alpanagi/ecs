@@ -18,14 +18,14 @@ pub const OneShots = struct {
         return .{ .state = &world.one_shots, .world = world };
     }
 
-    pub fn addSystem(
+    pub fn add(
         self: OneShots,
         allocator: std.mem.Allocator,
         comptime function: anytype,
         plugin: anytype,
     ) void {
         self.state.pending.append(allocator, buildSystemEntry(function, plugin)) catch
-            panicOom("OneShots.addSystem");
+            panicOom("OneShots.add");
     }
 
     pub fn run(self: OneShots, allocator: std.mem.Allocator) void {
@@ -54,7 +54,7 @@ test "init: registers the runner into the one_shots group" {
     try std.testing.expectEqual(1, world.systems.findGroup(group).?.systems.items.len);
 }
 
-test "addSystem: runs a queued system exactly once" {
+test "add: runs a queued system exactly once" {
     const allocator = std.testing.allocator;
 
     const State = struct {
@@ -71,7 +71,7 @@ test "addSystem: runs a queued system exactly once" {
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    OneShots.fromWorld(allocator, &world).addSystem(allocator, system, null);
+    OneShots.fromWorld(allocator, &world).add(allocator, system, null);
 
     world.runSystems(allocator);
     world.runSystems(allocator);
@@ -80,7 +80,7 @@ test "addSystem: runs a queued system exactly once" {
     try std.testing.expectEqual(0, world.one_shots.pending.items.len);
 }
 
-test "addSystem: runs queued systems in registration order" {
+test "add: runs queued systems in registration order" {
     const allocator = std.testing.allocator;
 
     const State = struct {
@@ -106,15 +106,15 @@ test "addSystem: runs queued systems in registration order" {
     defer world.deinit(allocator);
 
     const one_shots = OneShots.fromWorld(allocator, &world);
-    one_shots.addSystem(allocator, a, null);
-    one_shots.addSystem(allocator, b, null);
+    one_shots.add(allocator, a, null);
+    one_shots.add(allocator, b, null);
 
     world.runSystems(allocator);
 
     try std.testing.expectEqualSlices(u8, &.{ 1, 2 }, &State.calls);
 }
 
-test "addSystem: runs a plugin system through its bound plugin" {
+test "add: runs a plugin system through its bound plugin" {
     const allocator = std.testing.allocator;
 
     const Plugin = struct {
@@ -129,7 +129,7 @@ test "addSystem: runs a plugin system through its bound plugin" {
     defer world.deinit(allocator);
 
     var plugin = Plugin{};
-    OneShots.fromWorld(allocator, &world).addSystem(allocator, Plugin.tick, &plugin);
+    OneShots.fromWorld(allocator, &world).add(allocator, Plugin.tick, &plugin);
 
     world.runSystems(allocator);
 
@@ -153,14 +153,14 @@ test "run: a system queueing another does not disturb the running pass" {
 
         fn outer(one_shots: OneShots, inner_allocator: std.mem.Allocator) void {
             State.outer += 1;
-            one_shots.addSystem(inner_allocator, inner, null);
+            one_shots.add(inner_allocator, inner, null);
         }
     };
 
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    OneShots.fromWorld(allocator, &world).addSystem(allocator, Fixture.outer, null);
+    OneShots.fromWorld(allocator, &world).add(allocator, Fixture.outer, null);
 
     world.runSystems(allocator);
     try std.testing.expectEqual(1, State.outer);
@@ -192,7 +192,7 @@ test "run: a queued system sees entities spawned before the frame" {
     defer world.deinit(allocator);
 
     _ = world.addOwnedEntity(allocator, .{Position{ .x = 1, .y = 2 }});
-    OneShots.fromWorld(allocator, &world).addSystem(allocator, startup, null);
+    OneShots.fromWorld(allocator, &world).add(allocator, startup, null);
 
     world.runSystems(allocator);
 
@@ -210,8 +210,8 @@ test "deinit: releases systems queued but never run" {
     defer world.deinit(allocator);
 
     const one_shots = OneShots.fromWorld(allocator, &world);
-    one_shots.addSystem(allocator, system, null);
-    one_shots.addSystem(allocator, system, null);
+    one_shots.add(allocator, system, null);
+    one_shots.add(allocator, system, null);
 
     try std.testing.expectEqual(2, world.one_shots.pending.items.len);
 }
@@ -234,14 +234,14 @@ test "run: a system in a later group queues for the next frame" {
         fn registrar(one_shots: OneShots, inner: std.mem.Allocator) void {
             if (State.queued) return;
             State.queued = true;
-            one_shots.addSystem(inner, queued, null);
+            one_shots.add(inner, queued, null);
         }
     };
 
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    Systems.fromWorld(allocator, &world).addSystem(allocator, "update", Fixture.registrar, null);
+    Systems.fromWorld(allocator, &world).add(allocator, "update", Fixture.registrar, null);
 
     world.runSystems(allocator);
     try std.testing.expectEqual(0, State.calls);

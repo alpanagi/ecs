@@ -39,14 +39,14 @@ test "integration: a one-shot system registered through OneShots runs on the nex
 
         fn first(one_shots: OneShots) void {
             State.first_calls += 1;
-            one_shots.addSystem(allocator, second, null);
+            one_shots.add(allocator, second, null);
         }
     };
 
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    OneShots.fromWorld(allocator, &world).addSystem(allocator, Fixture.first, null);
+    OneShots.fromWorld(allocator, &world).add(allocator, Fixture.first, null);
 
     world.runSystems(allocator);
     try std.testing.expectEqual(1, State.first_calls);
@@ -74,7 +74,7 @@ test "integration: a one-shot system sees resources its plugin's build created t
     const Plugin = struct {
         pub fn build(_: *@This(), one_shots: OneShots, resources: Resources, inner: std.mem.Allocator) void {
             resources.addOwned(inner, Config, .{ .scale = 2 });
-            one_shots.addSystem(inner, startup, null);
+            one_shots.add(inner, startup, null);
         }
 
         fn startup(config: Resource(Config)) void {
@@ -108,7 +108,7 @@ test "integration: a one-shot system sees resources another plugin's build creat
     };
     const Consumer = struct {
         pub fn build(_: *@This(), one_shots: OneShots, inner: std.mem.Allocator) void {
-            one_shots.addSystem(inner, startup, null);
+            one_shots.add(inner, startup, null);
         }
 
         fn startup(config: Resource(Config)) void {
@@ -140,7 +140,7 @@ test "integration: a one-shot system sees entities its plugin's build spawned th
     const Plugin = struct {
         pub fn build(_: *@This(), entities: Entities, one_shots: OneShots, inner: std.mem.Allocator) void {
             entities.spawnOwned(inner, .{Position{ .x = 1, .y = 1 }});
-            one_shots.addSystem(inner, startup, null);
+            one_shots.add(inner, startup, null);
         }
 
         fn startup(positions: Query(&.{Position})) void {

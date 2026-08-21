@@ -18,7 +18,7 @@ pub const Observers = struct {
         return .{ .state = &world.observers, .world = world };
     }
 
-    pub fn addObserver(
+    pub fn add(
         self: Observers,
         allocator: std.mem.Allocator,
         event_id: EventId,
@@ -245,7 +245,7 @@ test "dispatch: routes on the subject as well as the event" {
     try std.testing.expectEqual(0, State.velocity_calls);
 }
 
-test "Observers.State.addObserver: defers registration until flush" {
+test "State.queue: defers registration until flush" {
     const allocator = std.testing.allocator;
 
     const component = @import("../core/lifecycle.zig").component;

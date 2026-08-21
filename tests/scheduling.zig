@@ -47,7 +47,7 @@ test "integration: a system registered through Systems into an existing group fi
             State.registrar_calls += 1;
             if (State.registered) return;
             State.registered = true;
-            for (0..system_count) |_| systems.addSystem(allocator, "update", added, null);
+            for (0..system_count) |_| systems.add(allocator, "update", added, null);
         }
 
         fn bystander() void {
@@ -58,8 +58,8 @@ test "integration: a system registered through Systems into an existing group fi
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    Systems.fromWorld(allocator, &world).addSystem(allocator, "update", Fixture.registrar, null);
-    Systems.fromWorld(allocator, &world).addSystem(allocator, "update", Fixture.bystander, null);
+    Systems.fromWorld(allocator, &world).add(allocator, "update", Fixture.registrar, null);
+    Systems.fromWorld(allocator, &world).add(allocator, "update", Fixture.bystander, null);
 
     world.runSystems(allocator);
     try std.testing.expectEqual(1, State.registrar_calls);
@@ -96,7 +96,7 @@ test "integration: a system registered through Systems into a new group first ru
                 var buffer: [16]u8 = undefined;
                 const group = std.fmt.bufPrint(&buffer, "group{d}", .{index}) catch unreachable;
                 systems.declareGroup(allocator, group);
-                systems.addSystem(allocator, group, added, null);
+                systems.add(allocator, group, added, null);
             }
         }
     };
@@ -105,7 +105,7 @@ test "integration: a system registered through Systems into a new group first ru
     defer world.deinit(allocator);
 
     const baseline = world.systems.groups.items.len;
-    Systems.fromWorld(allocator, &world).addSystem(allocator, "update", Fixture.registrar, null);
+    Systems.fromWorld(allocator, &world).add(allocator, "update", Fixture.registrar, null);
 
     world.runSystems(allocator);
     try std.testing.expectEqual(baseline, world.systems.groups.items.len);
@@ -151,9 +151,9 @@ test "integration: a declared group runs in the position it was placed" {
 
     Systems.fromWorld(allocator, &world).addGroupAfter(allocator, "pre_update", "physics");
 
-    Systems.fromWorld(allocator, &world).addSystem(allocator, "update", Order.update, null);
-    Systems.fromWorld(allocator, &world).addSystem(allocator, "physics", Order.physics, null);
-    Systems.fromWorld(allocator, &world).addSystem(allocator, "pre_update", Order.pre, null);
+    Systems.fromWorld(allocator, &world).add(allocator, "update", Order.update, null);
+    Systems.fromWorld(allocator, &world).add(allocator, "physics", Order.physics, null);
+    Systems.fromWorld(allocator, &world).add(allocator, "pre_update", Order.pre, null);
 
     world.runSystems(allocator);
 

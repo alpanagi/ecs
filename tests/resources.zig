@@ -47,8 +47,8 @@ test "integration: a resource removed through Resources stays readable for the r
     defer world.deinit(allocator);
 
     world.addOwnedResource(allocator, Config, .{ .scale = 1 });
-    Systems.fromWorld(allocator, &world).addSystem(allocator, "update", Fixture.remover, null);
-    Systems.fromWorld(allocator, &world).addSystem(allocator, "update", Fixture.reader, null);
+    Systems.fromWorld(allocator, &world).add(allocator, "update", Fixture.remover, null);
+    Systems.fromWorld(allocator, &world).add(allocator, "update", Fixture.reader, null);
 
     world.runSystems(allocator);
 
@@ -79,8 +79,8 @@ test "integration: a resource added through Resources is visible to the next gro
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    Systems.fromWorld(allocator, &world).addSystem(allocator, "pre_update", Fixture.producer, null);
-    Systems.fromWorld(allocator, &world).addSystem(allocator, "update", Fixture.consumer, null);
+    Systems.fromWorld(allocator, &world).add(allocator, "pre_update", Fixture.producer, null);
+    Systems.fromWorld(allocator, &world).add(allocator, "update", Fixture.consumer, null);
 
     world.runSystems(allocator);
 
@@ -122,7 +122,7 @@ test "integration: a resource Added observer can already read the resource" {
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    Observers.fromWorld(allocator, &world).addObserver(allocator, resource_events.added(Config), onAdded, null);
+    Observers.fromWorld(allocator, &world).add(allocator, resource_events.added(Config), onAdded, null);
     Resources.fromWorld(allocator, &world).addOwned(allocator, Config, .{ .scale = 3 });
 
     world.runSystems(allocator);
@@ -149,7 +149,7 @@ test "integration: a resource added through Resources fires Added at the flush" 
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    Observers.fromWorld(allocator, &world).addObserver(allocator, resource_events.added(Config), onAdded, null);
+    Observers.fromWorld(allocator, &world).add(allocator, resource_events.added(Config), onAdded, null);
     Resources.fromWorld(allocator, &world).addOwned(allocator, Config, .{ .scale = 1 });
     try std.testing.expectEqual(0, State.calls);
 
@@ -177,7 +177,7 @@ test "integration: a resource removed through Resources fires Destroying at the 
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    Observers.fromWorld(allocator, &world).addObserver(allocator, resource_events.destroying(Config), onDestroying, null);
+    Observers.fromWorld(allocator, &world).add(allocator, resource_events.destroying(Config), onDestroying, null);
     world.addOwnedResource(allocator, Config, .{ .scale = 1 });
 
     Resources.fromWorld(allocator, &world).remove(allocator, Config);

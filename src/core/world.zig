@@ -734,7 +734,7 @@ test "addSystem: registers a system that runSystems then runs" {
     var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
 
-    Systems.fromWorld(std.testing.allocator, &world).addSystem(std.testing.allocator, "update", system, null);
+    Systems.fromWorld(std.testing.allocator, &world).add(std.testing.allocator, "update", system, null);
 
     world.runSystems(std.testing.allocator);
     try std.testing.expect(State.called);
@@ -761,8 +761,8 @@ test "addSystem: groups systems by name in call order" {
     var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
 
-    Systems.fromWorld(std.testing.allocator, &world).addSystem(std.testing.allocator, "update", a, null);
-    Systems.fromWorld(std.testing.allocator, &world).addSystem(std.testing.allocator, "update", b, null);
+    Systems.fromWorld(std.testing.allocator, &world).add(std.testing.allocator, "update", a, null);
+    Systems.fromWorld(std.testing.allocator, &world).add(std.testing.allocator, "update", b, null);
 
     world.runSystems(std.testing.allocator);
     try std.testing.expectEqualSlices(u8, &.{ 1, 2 }, &State.calls);
@@ -1040,7 +1040,7 @@ test "getEntity: returns UnknownComponent for a marker the entity lacks" {
     );
 }
 
-test "dispatchOwnedEvent: runs an observer registered through addObserver" {
+test "dispatchOwnedEvent: runs a registered observer" {
     const Damage = struct { amount: u32 };
     const State = struct {
         var seen: u32 = 0;
@@ -1088,7 +1088,7 @@ test "dispatchOwnedEvent: dispatches synchronously through Observers" {
     defer world.deinit(allocator);
 
     world.observers.add(allocator, EventId.from(Damage), buildObserverEntry(onDamage, null));
-    Systems.fromWorld(allocator, &world).addSystem(allocator, "update", system, null);
+    Systems.fromWorld(allocator, &world).add(allocator, "update", system, null);
 
     world.runSystems(allocator);
 
@@ -1257,7 +1257,7 @@ test "runSystems: runs a one shot system exactly once" {
     var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
 
-    OneShots.fromWorld(std.testing.allocator, &world).addSystem(std.testing.allocator, system, null);
+    OneShots.fromWorld(std.testing.allocator, &world).add(std.testing.allocator, system, null);
     world.runSystems(std.testing.allocator);
     world.runSystems(std.testing.allocator);
 
@@ -1276,7 +1276,7 @@ test "runSystems: flushes commands queued by a system after each group" {
     var world = World.init(std.testing.allocator);
     defer world.deinit(std.testing.allocator);
 
-    Systems.fromWorld(std.testing.allocator, &world).addSystem(std.testing.allocator, "update", system, null);
+    Systems.fromWorld(std.testing.allocator, &world).add(std.testing.allocator, "update", system, null);
     world.runSystems(std.testing.allocator);
 
     try std.testing.expectEqual(1, world.archetypes.items.len);
@@ -1300,7 +1300,7 @@ test "flushSystemRegistrations: applies queued registrations without running a f
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    Systems.fromWorld(allocator, &world).addSystem(allocator, "update", system, null);
+    Systems.fromWorld(allocator, &world).add(allocator, "update", system, null);
     try std.testing.expectEqual(0, world.systems.findGroup("update").?.systems.items.len);
 
     world.flushSystemRegistrations(allocator);
@@ -1441,7 +1441,7 @@ test "integration: a plugin's build can register an observer through Entities" {
         total: u32 = 0,
 
         pub fn build(self: *@This(), observers: Observers, allocator: std.mem.Allocator) void {
-            observers.addObserver(allocator, EventId.from(Damage), onDamage, self);
+            observers.add(allocator, EventId.from(Damage), onDamage, self);
         }
 
         fn onDamage(self: *@This(), event: Event(Damage)) void {

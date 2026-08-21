@@ -208,7 +208,7 @@ test "addSystem: defers registration until the queue is flushed" {
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    Systems.fromWorld(allocator, &world).addSystem(allocator, "update", system, null);
+    Systems.fromWorld(allocator, &world).add(allocator, "update", system, null);
     try std.testing.expectEqual(0, world.systems.findGroup("update").?.systems.items.len);
 
     world.runSystems(allocator);

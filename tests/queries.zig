@@ -45,7 +45,7 @@ test "integration: a system can take a query as a parameter" {
     _ = world.addOwnedEntity(allocator, .{Position{ .x = 1, .y = 0 }});
     _ = world.addOwnedEntity(allocator, .{Position{ .x = 2, .y = 0 }});
 
-    Systems.fromWorld(allocator, &world).addSystem(allocator, "update", system, null);
+    Systems.fromWorld(allocator, &world).add(allocator, "update", system, null);
     world.runSystems(allocator);
 
     try std.testing.expectEqual(@as(f32, 3), State.sum);
@@ -89,7 +89,7 @@ test "integration: a system can mix queries with other parameters in any order" 
     _ = world.addOwnedEntity(allocator, .{Position{ .x = 1, .y = 1 }});
     _ = world.addOwnedEntity(allocator, .{ Position{ .x = 2, .y = 2 }, Velocity{ .dx = 1, .dy = 1 } });
 
-    Systems.fromWorld(allocator, &world).addSystem(allocator, "update", system, null);
+    Systems.fromWorld(allocator, &world).add(allocator, "update", system, null);
     world.runSystems(allocator);
 
     try std.testing.expectEqual(2, State.positions);
@@ -114,7 +114,7 @@ test "integration: a query parameter can mutate the components it yields" {
 
     const entity = world.addOwnedEntity(allocator, .{Position{ .x = 1, .y = 0 }});
 
-    Systems.fromWorld(allocator, &world).addSystem(allocator, "update", system, null);
+    Systems.fromWorld(allocator, &world).add(allocator, "update", system, null);
     world.runSystems(allocator);
 
     const position = try world.getEntity(entity, &.{Position});
@@ -142,7 +142,7 @@ test "integration: a system can mix resources, queries and the world" {
 
     world.addOwnedResource(allocator, Gravity, .{ .value = 2 });
     const entity = world.addOwnedEntity(allocator, .{Position{ .x = 0, .y = 10 }});
-    Systems.fromWorld(allocator, &world).addSystem(allocator, "update", system, null);
+    Systems.fromWorld(allocator, &world).add(allocator, "update", system, null);
 
     world.runSystems(allocator);
 
@@ -178,7 +178,7 @@ test "integration: a system follows an Entity stored in a component" {
     const target = world.addOwnedEntity(allocator, .{Position{ .x = 5, .y = 0 }});
     _ = world.addOwnedEntity(allocator, .{Target{ .entity = target }});
 
-    Systems.fromWorld(allocator, &world).addSystem(allocator, "update", system, null);
+    Systems.fromWorld(allocator, &world).add(allocator, "update", system, null);
     world.runSystems(allocator);
 
     try std.testing.expectEqual(@as(f32, 6), State.target_x);

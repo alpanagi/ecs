@@ -18,7 +18,7 @@ pub const Systems = struct {
         return .{ .state = &world.systems };
     }
 
-    pub fn addSystem(
+    pub fn add(
         self: Systems,
         allocator: std.mem.Allocator,
         group_name: []const u8,
@@ -398,7 +398,7 @@ test "pending: declareGroup: defers placement until flush" {
     try std.testing.expectEqual(2, registry.groupIndex("post_update").?);
 }
 
-test "pending: addSystem: defers registration until flush" {
+test "pending: queueSystem: defers registration until flush" {
     const allocator = std.testing.allocator;
 
     const entry: SystemEntry = .{ .function = struct {

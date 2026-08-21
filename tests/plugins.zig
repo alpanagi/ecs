@@ -37,8 +37,8 @@ test "integration: a plugin system and observer can declare parameters beyond th
         }
 
         pub fn build(self: *@This(), observers: Observers, systems: Systems, inner: std.mem.Allocator) void {
-            systems.addSystem(inner, "update", move, self);
-            observers.addObserver(inner, EventId.from(Damage), onDamage, self);
+            systems.add(inner, "update", move, self);
+            observers.add(inner, EventId.from(Damage), onDamage, self);
         }
 
         fn move(self: *@This(), query: Query(&.{Position})) void {
@@ -130,7 +130,7 @@ test "integration: a plugin's build can register systems bound to the plugin" {
         }
 
         pub fn build(self: *@This(), systems: Systems, allocator: std.mem.Allocator) void {
-            systems.addSystem(allocator, "update", system, self);
+            systems.add(allocator, "update", system, self);
         }
 
         fn system(self: *@This(), _: std.mem.Allocator) void {
@@ -182,8 +182,8 @@ test "integration: plugin systems share state across runs" {
         }
 
         pub fn build(self: *@This(), systems: Systems, allocator: std.mem.Allocator) void {
-            systems.addSystem(allocator, "update", increment, self);
-            systems.addSystem(allocator, "post_update", increment, self);
+            systems.add(allocator, "update", increment, self);
+            systems.add(allocator, "post_update", increment, self);
         }
 
         fn increment(self: *@This(), _: std.mem.Allocator) void {
@@ -210,7 +210,7 @@ test "integration: a plugin's build registers a one shot system" {
         calls: usize = 0,
 
         pub fn build(self: *@This(), one_shots: OneShots, allocator: std.mem.Allocator) void {
-            one_shots.addSystem(allocator, tick, self);
+            one_shots.add(allocator, tick, self);
         }
 
         fn tick(self: *@This(), _: std.mem.Allocator) void {
@@ -233,7 +233,7 @@ test "integration: a plugin's build can register a resource, read later by a sys
     const ConfigPlugin = struct {
         pub fn build(_: *@This(), systems: Systems, resources: Resources, allocator: std.mem.Allocator) void {
             resources.addOwned(allocator, ClearColor, .{ .r = 1, .g = 1, .b = 1 });
-            systems.addSystem(allocator, "update", fadeToBlack, null);
+            systems.add(allocator, "update", fadeToBlack, null);
         }
 
         fn fadeToBlack(color: Resource(ClearColor)) void {
@@ -269,9 +269,9 @@ test "integration: a plugin's build can register systems, one-shot systems and o
             observers: Observers,
             inner: std.mem.Allocator,
         ) void {
-            systems.addSystem(inner, "update", update, self);
-            one_shots.addSystem(inner, setup, self);
-            observers.addObserver(inner, EventId.from(Damage), onDamage, self);
+            systems.add(inner, "update", update, self);
+            one_shots.add(inner, setup, self);
+            observers.add(inner, EventId.from(Damage), onDamage, self);
         }
 
         fn update(self: *@This()) void {
@@ -311,14 +311,14 @@ test "integration: a plugin system registering a plugin system through Systems b
         added_calls: usize = 0,
 
         pub fn build(self: *@This(), systems: Systems, inner: std.mem.Allocator) void {
-            systems.addSystem(inner, "update", registrar, self);
+            systems.add(inner, "update", registrar, self);
         }
 
         fn registrar(self: *@This(), systems: Systems) void {
             self.registrar_calls += 1;
             if (self.registered) return;
             self.registered = true;
-            systems.addSystem(allocator, "post_update", added, self);
+            systems.add(allocator, "post_update", added, self);
         }
 
         fn added(self: *@This()) void {
@@ -354,7 +354,7 @@ test "integration: a plugin's build can register a resource through Resources" {
     const Plugin = struct {
         pub fn build(_: *@This(), systems: Systems, resources: Resources, inner: std.mem.Allocator) void {
             resources.addOwned(inner, Config, .{ .scale = 4 });
-            systems.addSystem(inner, "update", read, null);
+            systems.add(inner, "update", read, null);
         }
 
         fn read(config: Resource(Config)) void {
