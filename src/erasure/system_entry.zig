@@ -1,4 +1,8 @@
+const observer_protocol = @import("../protocols/observer.zig");
+const plugin_observer_protocol = @import("../protocols/plugin_observer.zig");
+const plugin_system_protocol = @import("../protocols/plugin_system.zig");
 const std = @import("std");
+const system_protocol = @import("../protocols/system.zig");
 
 const World = @import("../core/world.zig").World;
 
@@ -42,13 +46,16 @@ pub const ObserverEntry = union(enum) {
 };
 
 pub fn buildSystemEntry(comptime function: anytype, plugin: anytype) SystemEntry {
-    validateReturnsVoid(@TypeOf(function), "system");
-
     if (comptime @TypeOf(plugin) == @TypeOf(null)) {
+        if (comptime !system_protocol.validate(@TypeOf(function))) @compileError(
+            @typeName(@TypeOf(function)) ++ " does not implement the System protocol",
+        );
         return .{ .function = systemInvoker(function) };
     } else {
-        const Plugin = pluginType(@TypeOf(plugin), "system");
-        validatePluginReceiver(Plugin, @TypeOf(function), "system");
+        const Plugin = PluginType(@TypeOf(plugin), "system");
+        if (comptime !plugin_system_protocol.validate(@TypeOf(function), Plugin)) @compileError(
+            @typeName(@TypeOf(function)) ++ " does not implement the PluginSystem protocol",
+        );
         const typed_plugin: *Plugin = plugin;
         return .{ .plugin_function = .{
             .plugin = typed_plugin,
@@ -58,48 +65,21 @@ pub fn buildSystemEntry(comptime function: anytype, plugin: anytype) SystemEntry
 }
 
 pub fn buildObserverEntry(comptime function: anytype, plugin: anytype) ObserverEntry {
-    validateReturnsVoid(@TypeOf(function), "observer");
-    validateSingleEvent(@TypeOf(function));
-
     if (comptime @TypeOf(plugin) == @TypeOf(null)) {
+        if (comptime !observer_protocol.validate(@TypeOf(function))) @compileError(
+            @typeName(@TypeOf(function)) ++ " does not implement the Observer protocol",
+        );
         return .{ .function = observerInvoker(function) };
     } else {
-        const Plugin = pluginType(@TypeOf(plugin), "observer");
-        validatePluginReceiver(Plugin, @TypeOf(function), "observer");
+        const Plugin = PluginType(@TypeOf(plugin), "observer");
+        if (comptime !plugin_observer_protocol.validate(@TypeOf(function), Plugin)) @compileError(
+            @typeName(@TypeOf(function)) ++ " does not implement the PluginObserver protocol",
+        );
         const typed_plugin: *Plugin = plugin;
         return .{ .plugin_function = .{
             .plugin = typed_plugin,
             .function = pluginObserverInvoker(function),
         } };
-    }
-}
-
-fn validateReturnsVoid(comptime Function: type, comptime kind: []const u8) void {
-    if (functionInfo(Function, kind).return_type != void) {
-        @compileError(kind ++ " must return void");
-    }
-}
-
-fn validatePluginReceiver(comptime Plugin: type, comptime Function: type, comptime kind: []const u8) void {
-    const error_message = "a plugin " ++ kind ++ " must take *" ++ @typeName(Plugin) ++ " as its first parameter";
-
-    const info = functionInfo(Function, kind);
-    if (info.params.len == 0) @compileError(error_message);
-
-    const Receiver = info.params[0].type orelse @compileError(error_message);
-    if (Receiver != *Plugin) @compileError(error_message);
-}
-
-fn validateSingleEvent(comptime Function: type) void {
-    comptime var seen: ?type = null;
-    inline for (functionInfo(Function, "observer").params) |param| {
-        const P = param.type orelse continue;
-        if (comptime @typeInfo(P) != .@"struct") continue;
-        if (comptime !@hasDecl(P, "fromEvent")) continue;
-        if (comptime seen) |first| @compileError(
-            "an observer takes a single event, found " ++ @typeName(first) ++ " and " ++ @typeName(P),
-        );
-        seen = P;
     }
 }
 
@@ -172,7 +152,7 @@ fn resolveObserverArguments(
     }
 }
 
-fn pluginType(comptime Pointer: type, comptime kind: []const u8) type {
+fn PluginType(comptime Pointer: type, comptime kind: []const u8) type {
     const error_message = "a plugin " ++ kind ++ " must be given a mutable single-item pointer to its plugin";
 
     const pointer = switch (@typeInfo(Pointer)) {
@@ -182,17 +162,6 @@ fn pluginType(comptime Pointer: type, comptime kind: []const u8) type {
     if (pointer.size != .one or pointer.is_const) @compileError(error_message);
 
     return pointer.child;
-}
-
-fn functionInfo(comptime F: type, comptime kind: []const u8) std.builtin.Type.Fn {
-    return switch (@typeInfo(F)) {
-        .@"fn" => |info| info,
-        .pointer => |pointer| switch (@typeInfo(pointer.child)) {
-            .@"fn" => |info| info,
-            else => @compileError(kind ++ " must be a function"),
-        },
-        else => @compileError(kind ++ " must be a function"),
-    };
 }
 
 test "SystemEntry.run: calls a plain function entry" {

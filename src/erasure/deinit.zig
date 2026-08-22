@@ -1,3 +1,4 @@
+const deinit_protocol = @import("../protocols/deinit.zig");
 const std = @import("std");
 
 pub const DeinitFunction = *const fn (std.mem.Allocator, *anyopaque) void;
@@ -22,30 +23,11 @@ pub fn getDestroyFunction(comptime T: type) DestroyFunction {
 }
 
 fn deinitIfPresent(allocator: std.mem.Allocator, comptime T: type, instance: *T) void {
-    if (!std.meta.hasFn(T, "deinit")) return;
+    if (comptime !deinit_protocol.validate(T)) return;
 
-    const info = @typeInfo(@TypeOf(T.deinit)).@"fn";
-    const name = @typeName(T);
-    const error_message = name ++ ".deinit has an unsupported signature, expected fn (*" ++ name ++ ") void or fn (*" ++ name ++ ", std.mem.Allocator) void";
-
-    comptime {
-        if (info.return_type != void) @compileError(error_message);
-
-        if (info.params.len == 1 or info.params.len == 2) {
-            const Self = info.params[0].type orelse @compileError(error_message);
-            if (Self != *T and Self != *const T) @compileError(error_message);
-        }
-
-        if (info.params.len == 2) {
-            const Allocator = info.params[1].type orelse @compileError(error_message);
-            if (Allocator != std.mem.Allocator) @compileError(error_message);
-        }
-    }
-
-    switch (info.params.len) {
+    switch (@typeInfo(@TypeOf(T.deinit)).@"fn".params.len) {
         1 => instance.deinit(),
-        2 => instance.deinit(allocator),
-        else => @compileError(error_message),
+        else => instance.deinit(allocator),
     }
 }
 

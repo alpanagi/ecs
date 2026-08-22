@@ -1,22 +1,17 @@
+const event_view_protocol = @import("../protocols/event_view.zig");
+const parameter_protocol = @import("../protocols/parameter.zig");
 const std = @import("std");
 
 const World = @import("../core/world.zig").World;
 
 pub fn resolveParameter(allocator: std.mem.Allocator, world: *World, comptime Parameter: type) Parameter {
-    if (Parameter == std.mem.Allocator) {
-        return allocator;
-    } else if (std.meta.hasFn(Parameter, "fromWorld")) {
-        const Expected = fn (std.mem.Allocator, *World) Parameter;
-        if (@TypeOf(Parameter.fromWorld) != Expected) {
-            @compileError(@typeName(Parameter) ++ ".fromWorld must be " ++ @typeName(Expected));
-        }
-        return Parameter.fromWorld(allocator, world);
-    } else {
-        @compileError(
-            "unsupported parameter type " ++ @typeName(Parameter) ++
-                ", expected std.mem.Allocator or a type declaring fromWorld",
-        );
-    }
+    if (Parameter == std.mem.Allocator) return allocator;
+
+    if (comptime !parameter_protocol.validate(Parameter)) @compileError(
+        @typeName(Parameter) ++ " does not implement the Parameter protocol",
+    );
+
+    return Parameter.fromWorld(allocator, world);
 }
 
 pub fn resolveObserverParameter(
@@ -25,13 +20,8 @@ pub fn resolveObserverParameter(
     comptime Parameter: type,
     payload: *const anyopaque,
 ) Parameter {
-    if (std.meta.hasFn(Parameter, "fromEvent")) {
-        const Expected = fn (*const anyopaque) Parameter;
-        if (@TypeOf(Parameter.fromEvent) != Expected) {
-            @compileError(@typeName(Parameter) ++ ".fromEvent must be " ++ @typeName(Expected));
-        }
-        return Parameter.fromEvent(payload);
-    }
+    if (comptime event_view_protocol.validate(Parameter)) return Parameter.fromEvent(payload);
+
     return resolveParameter(allocator, world, Parameter);
 }
 

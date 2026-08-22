@@ -1,3 +1,4 @@
+const plugin_protocol = @import("../protocols/plugin.zig");
 const std = @import("std");
 const util = @import("../utils.zig");
 
@@ -44,20 +45,13 @@ const PluginsState = struct {
     ) void {
         const T = @TypeOf(plugin);
         const name = @typeName(T);
-        const build_error_message = name ++ ".build must take *" ++ name ++
-            " as its first parameter and return void";
 
         comptime {
             if (@typeInfo(T) != .@"struct") {
                 @compileError("a plugin must be a struct value, found " ++ name);
             }
 
-            if (!std.meta.hasFn(T, "build")) @compileError(name ++ " must declare build");
-            const build_info = @typeInfo(@TypeOf(T.build)).@"fn";
-            if (build_info.params.len == 0 or build_info.params[0].type != *T) {
-                @compileError(build_error_message);
-            }
-            if (build_info.return_type != void) @compileError(build_error_message);
+            if (!plugin_protocol.validate(T)) @compileError(name ++ " does not implement the Plugin protocol");
         }
 
         const stored = allocator.create(T) catch util.panicOom("PluginsState.addPlugin");

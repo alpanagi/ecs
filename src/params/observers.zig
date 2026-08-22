@@ -1,3 +1,4 @@
+const event_protocol = @import("../protocols/event.zig");
 const std = @import("std");
 
 const EventId = @import("../events/event_id.zig").EventId;
@@ -99,12 +100,8 @@ const Registration = struct {
 
 fn eventIdOf(event: anytype) EventId {
     const Payload = @TypeOf(event);
-    if (comptime !std.meta.hasFn(Payload, "id")) return eventId(Payload);
+    if (comptime !event_protocol.validate(Payload)) return eventId(Payload);
 
-    const Expected = fn (Payload) EventId;
-    if (@TypeOf(Payload.id) != Expected) {
-        @compileError(@typeName(Payload) ++ ".id must be " ++ @typeName(Expected));
-    }
     return event.id();
 }
 

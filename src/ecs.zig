@@ -53,5 +53,14 @@ test {
     _ = @import("params/views/query.zig");
     _ = @import("params/views/resource.zig");
     _ = @import("plugins/one_shots.zig");
+    _ = @import("protocols/deinit.zig");
+    _ = @import("protocols/event.zig");
+    _ = @import("protocols/event_view.zig");
+    _ = @import("protocols/observer.zig");
+    _ = @import("protocols/parameter.zig");
+    _ = @import("protocols/plugin.zig");
+    _ = @import("protocols/plugin_observer.zig");
+    _ = @import("protocols/plugin_system.zig");
+    _ = @import("protocols/system.zig");
     _ = @import("utils.zig");
 }
