@@ -6,6 +6,7 @@ pub fn validate(T: type) bool {
         .pointer => |pointer| pointer,
         else => return false,
     };
+    if (pointer.is_const) return false;
 
     const child_info = @typeInfo(pointer.child);
     if (child_info != .@"struct") return false;
@@ -18,6 +19,13 @@ test "validate: accepts a pointer to a struct" {
     var data: Data = .{ .data = 11 };
 
     try std.testing.expect(validate(@TypeOf(&data)));
+}
+
+test "validate: rejects a const pointer to a struct" {
+    const Data = struct { data: u32 };
+    const data: Data = .{ .data = 11 };
+
+    try std.testing.expect(!validate(@TypeOf(&data)));
 }
 
 test "validate: rejects a struct value" {
