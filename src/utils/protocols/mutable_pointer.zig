@@ -7,6 +7,7 @@ pub fn validate(T: type) bool {
         else => return false,
     };
     if (pointer.is_const) return false;
+    if (pointer.size != .one) return false;
 
     const child_info = @typeInfo(pointer.child);
     if (child_info != .@"struct") return false;
@@ -41,8 +42,8 @@ test "validate: rejects a pointer to a non-struct" {
     try std.testing.expect(!validate(@TypeOf(&data)));
 }
 
-test "validate: rejects a pointer to a slice" {
-    var data: [2]u32 = .{ 14, 15 };
+test "validate: rejects a slice" {
+    const Data = struct { data: u32 };
 
-    try std.testing.expect(!validate(@TypeOf(&data)));
+    try std.testing.expect(!validate([]Data));
 }
