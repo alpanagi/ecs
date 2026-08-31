@@ -2,19 +2,17 @@ const std = @import("std");
 
 const deinit_function_name = "deinit";
 
-pub fn validate(T: type) bool {
-    const error_message = "Does not implement Deinit protocol: " ++ @typeName(T);
+pub fn validate(Type: type) bool {
+    const error_message = "Does not implement Deinit protocol: " ++ @typeName(Type);
 
-    if (@typeInfo(T) != .@"struct") return false;
-    if (!std.meta.hasFn(T, deinit_function_name)) return false;
+    if (@typeInfo(Type) != .@"struct") return false;
+    if (!std.meta.hasFn(Type, deinit_function_name)) return false;
 
-    const deinit_info = @typeInfo(@TypeOf(@field(T, deinit_function_name))).@"fn";
+    const deinit_info = @typeInfo(@TypeOf(@field(Type, deinit_function_name))).@"fn";
     if (deinit_info.return_type != void) @compileError(error_message);
-
-    const params = deinit_info.params;
-    if (params.len != 2) @compileError(error_message);
-    if (params[0].type != *T) @compileError(error_message);
-    if (params[1].type != std.mem.Allocator) @compileError(error_message);
+    if (deinit_info.params.len != 2) @compileError(error_message);
+    if (deinit_info.params[0].type != *Type) @compileError(error_message);
+    if (deinit_info.params[1].type != std.mem.Allocator) @compileError(error_message);
 
     return true;
 }

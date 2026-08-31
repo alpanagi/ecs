@@ -1,7 +1,7 @@
 const std = @import("std");
 
-pub fn validate(T: type) bool {
-    const type_info = @typeInfo(T);
+pub fn validate(Type: type) bool {
+    const type_info = @typeInfo(Type);
     const pointer = switch (type_info) {
         .pointer => |pointer| pointer,
         else => return false,
