@@ -2,7 +2,7 @@ const std = @import("std");
 const parameter_protocol = @import("parameter.zig");
 
 pub fn validate(Type: type) bool {
-    const error_message = "Does not implement SetupFunction protocol: " ++ @typeName(Type);
+    const error_message = "Does not implement System protocol: " ++ @typeName(Type);
 
     const function_info = switch (@typeInfo(Type)) {
         .@"fn" => |function| function,

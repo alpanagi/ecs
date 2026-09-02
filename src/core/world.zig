@@ -1,5 +1,5 @@
 const std = @import("std");
-const setup_function_protocol = @import("protocols/setup_function.zig");
+const system_protocol = @import("protocols/system.zig");
 
 const Box = @import("../utils/box.zig").Box;
 const ContextId = @import("../modules/contexts/module.zig").ContextId;
@@ -20,8 +20,8 @@ pub const World = struct {
     pub fn addModule(world: *World, allocator: std.mem.Allocator, setup_function: anytype) void {
         const SetupFunctionType = @TypeOf(setup_function);
 
-        if (comptime !setup_function_protocol.validate(SetupFunctionType))
-            @compileError("Does not implement SetupFunction protocol: " ++ @typeName(
+        if (comptime !system_protocol.validate(SetupFunctionType))
+            @compileError("Does not implement System protocol: " ++ @typeName(
                 SetupFunctionType,
             ));
 
