@@ -43,7 +43,7 @@ test "runSystem: runs valid system with initialized parameters" {
 
     const allocator = std.testing.allocator;
 
-    var world = World.init();
+    var world = World.init(allocator);
     defer world.deinit(allocator);
 
     runSystem(allocator, &world, system);

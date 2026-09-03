@@ -1,5 +1,6 @@
 const std = @import("std");
 const system_protocol = @import("protocols/system.zig");
+const systems_module = @import("../modules/systems/module.zig");
 
 const Box = @import("../utils/box.zig").Box;
 const ContextId = @import("../modules/contexts/module.zig").ContextId;
@@ -9,8 +10,12 @@ const runSystem = @import("run_system.zig").runSystem;
 pub const World = struct {
     contexts: std.AutoHashMapUnmanaged(ContextId, Box) = .empty,
 
-    pub fn init() World {
-        return World{};
+    pub fn init(allocator: std.mem.Allocator) World {
+        var world = World{};
+
+        world.addModule(allocator, systems_module.setup);
+
+        return world;
     }
 
     pub fn deinit(self: *World, allocator: std.mem.Allocator) void {
@@ -32,7 +37,7 @@ pub const World = struct {
 test "deinit: calls the box's deinit" {
     const allocator = std.testing.allocator;
 
-    var world = World.init();
+    var world = World.init(allocator);
     defer world.deinit(allocator);
 
     const Context = struct { data: u32 };
