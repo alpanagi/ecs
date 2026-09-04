@@ -56,5 +56,9 @@ test "addOwned: adds context to contexts" {
 
     parameter.addOwned(allocator, &context);
 
-    try std.testing.expectEqual(1, world.contexts.size);
+    const box = world.contexts.get(ContextId.fromType(Context)).?;
+    const saved_context: *Context = @ptrCast(@alignCast(box.value));
+
+    const expected = Context{ .data = 11 };
+    try std.testing.expectEqual(expected, saved_context.*);
 }
