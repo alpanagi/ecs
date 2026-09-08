@@ -40,13 +40,13 @@ test "deinit: calls the box's deinit" {
     var world = World.init(allocator);
     defer world.deinit(allocator);
 
-    const Resource = struct { data: u32 };
-    const resource = try allocator.create(Resource);
+    const Type = struct { data: u32 };
+    const resource = try allocator.create(Type);
     resource.* = .{ .data = 11 };
 
     try world.resources.put(
         allocator,
-        ResourceId.fromType(Resource),
+        ResourceId.fromType(Type),
         Box.fromOwnedPointer(resource),
     );
 }

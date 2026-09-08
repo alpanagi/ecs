@@ -8,17 +8,38 @@ const panicOom = @import("../../utils/panic.zig").panicOom;
 const runSystem = @import("../../core/run_system.zig").runSystem;
 
 pub const SystemsState = struct {
-    groups: std.StringArrayHashMapUnmanaged(std.ArrayList(Thunk)) = .empty,
+    groups: std.ArrayList(Group) = .empty,
 
     pub fn deinit(self: *SystemsState, allocator: std.mem.Allocator) void {
-        for (self.groups.values()) |*group| group.deinit(allocator);
+        for (self.groups.items) |*group| {
+            allocator.free(group.name);
+            group.systems.deinit(allocator);
+        }
         self.groups.deinit(allocator);
+    }
+
+    pub fn addGroup(
+        self: *SystemsState,
+        allocator: std.mem.Allocator,
+        group_name: []const u8,
+    ) void {
+        for (self.groups.items) |*group| {
+            if (std.mem.eql(u8, group_name, group.name)) panic(
+                "Tried to add a group twice: {s}",
+                .{group_name},
+            );
+        }
+
+        self.groups.append(allocator, .{
+            .name = allocator.dupe(u8, group_name) catch panicOom(@This(), @src()),
+            .systems = .empty,
+        }) catch panicOom(@This(), @src());
     }
 
     pub fn add(
         self: *SystemsState,
         allocator: std.mem.Allocator,
-        group: []const u8,
+        group_name: []const u8,
         system: anytype,
     ) void {
         const SystemType = @TypeOf(system);
@@ -26,8 +47,9 @@ pub const SystemsState = struct {
         if (comptime !system_protocol.validate(SystemType))
             @compileError("Does not implement System protocol: " ++ @typeName(SystemType));
 
-        const group_systems = self.groups.getPtr(group) orelse
-            panic("Tried to add system to unknown group: {s}", .{group});
+        const group = for (self.groups.items) |*group| {
+            if (std.mem.eql(u8, group_name, group.name)) break group;
+        } else panic("Tried to add system to unknown group: {s}", .{group_name});
 
         const thunk = struct {
             pub fn function(inner_allocator: std.mem.Allocator, world: *World) void {
@@ -35,8 +57,13 @@ pub const SystemsState = struct {
             }
         }.function;
 
-        group_systems.append(allocator, &thunk) catch panicOom(@This(), @src());
+        group.systems.append(allocator, &thunk) catch panicOom(@This(), @src());
     }
+};
+
+const Group = struct {
+    name: []const u8,
+    systems: std.ArrayList(Thunk),
 };
 
 const Thunk = *const fn (std.mem.Allocator, *World) void;
@@ -51,8 +78,18 @@ test "deinit: deallocates groups" {
     var state = SystemsState{};
     defer state.deinit(allocator);
 
-    try state.groups.put(allocator, "group", .empty);
-    try state.groups.getPtr("group").?.append(allocator, &thunk);
+    state.addGroup(allocator, "group");
+    try state.groups.items[0].systems.append(allocator, &thunk);
+}
+
+test "addGroup: adds group to the group list" {
+    const allocator = std.testing.allocator;
+
+    var state = SystemsState{};
+    defer state.deinit(allocator);
+
+    state.addGroup(allocator, "group");
+    try std.testing.expectEqualSlices(u8, "group", state.groups.items[0].name);
 }
 
 test "add: appends system to the correct group" {
@@ -65,13 +102,12 @@ test "add: appends system to the correct group" {
     var state = SystemsState{};
     defer state.deinit(allocator);
 
-    try state.groups.put(allocator, "group_1", .empty);
-    try state.groups.put(allocator, "group_2", .empty);
-
+    state.addGroup(allocator, "group_1");
+    state.addGroup(allocator, "group_2");
     state.add(allocator, "group_2", system);
 
-    try std.testing.expectEqual(0, state.groups.get("group_1").?.items.len);
-    try std.testing.expectEqual(1, state.groups.get("group_2").?.items.len);
+    try std.testing.expectEqual(0, state.groups.items[0].systems.items.len);
+    try std.testing.expectEqual(1, state.groups.items[1].systems.items.len);
 }
 
 test "add: creates a thunk that calls the passed system" {
@@ -93,11 +129,10 @@ test "add: creates a thunk that calls the passed system" {
     var state = SystemsState{};
     defer state.deinit(allocator);
 
-    try state.groups.put(allocator, "group", .empty);
-
+    state.addGroup(allocator, "group");
     state.add(allocator, "group", system);
 
-    state.groups.getPtr("group").?.items[0](allocator, &world);
+    state.groups.items[0].systems.items[0](allocator, &world);
 
     try std.testing.expectEqual(1, TestState.system_calls);
 }
