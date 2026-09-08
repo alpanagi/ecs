@@ -44,6 +44,8 @@ pub const Resources = struct {
 };
 
 test "addOwned: adds resource to resources" {
+    const Resource = @import("resource_parameter.zig").Resource;
+
     const allocator = std.testing.allocator;
 
     var world = World.init(allocator);
@@ -55,9 +57,7 @@ test "addOwned: adds resource to resources" {
     var resource: Type = .{ .data = 11 };
 
     parameter.addOwned(allocator, &resource);
-
-    const box = world.resources.get(ResourceId.fromType(Type)).?;
-    const saved_resource: *Type = @ptrCast(@alignCast(box.value));
+    const saved_resource = Resource(Type).fromWorld(allocator, &world).value;
 
     const expected = Type{ .data = 11 };
     try std.testing.expectEqual(expected, saved_resource.*);
