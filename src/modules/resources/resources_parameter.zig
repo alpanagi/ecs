@@ -51,14 +51,14 @@ test "addOwned: adds resource to resources" {
 
     const parameter = Resources.fromWorld(allocator, &world);
 
-    const Resource = struct { data: u32 };
-    var resource: Resource = .{ .data = 11 };
+    const Type = struct { data: u32 };
+    var resource: Type = .{ .data = 11 };
 
     parameter.addOwned(allocator, &resource);
 
-    const box = world.resources.get(ResourceId.fromType(Resource)).?;
-    const saved_resource: *Resource = @ptrCast(@alignCast(box.value));
+    const box = world.resources.get(ResourceId.fromType(Type)).?;
+    const saved_resource: *Type = @ptrCast(@alignCast(box.value));
 
-    const expected = Resource{ .data = 11 };
+    const expected = Type{ .data = 11 };
     try std.testing.expectEqual(expected, saved_resource.*);
 }

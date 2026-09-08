@@ -2,8 +2,6 @@ const std = @import("std");
 const deinit_protocol = @import("protocols/deinit.zig");
 const mutable_pointer_protocol = @import("protocols/mutable_pointer.zig");
 
-const DeinitFunction = fn (*anyopaque, std.mem.Allocator) void;
-
 pub const Box = struct {
     value: *anyopaque,
     deinit_function: *const DeinitFunction,
@@ -33,6 +31,8 @@ pub const Box = struct {
         self.* = undefined;
     }
 };
+
+const DeinitFunction = fn (*anyopaque, std.mem.Allocator) void;
 
 test "deinit: calls deinit of inner type on deinit" {
     const allocator = std.testing.allocator;

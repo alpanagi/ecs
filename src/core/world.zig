@@ -24,13 +24,13 @@ pub const World = struct {
         self.resources.deinit(allocator);
     }
 
-    pub fn addModule(world: *World, allocator: std.mem.Allocator, setup_function: anytype) void {
+    pub fn addModule(self: *World, allocator: std.mem.Allocator, setup_function: anytype) void {
         const SetupFunctionType = @TypeOf(setup_function);
 
         if (comptime !system_protocol.validate(SetupFunctionType))
             @compileError("Does not implement System protocol: " ++ @typeName(SetupFunctionType));
 
-        runSystem(allocator, world, setup_function);
+        runSystem(allocator, self, setup_function);
     }
 };
 
