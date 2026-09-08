@@ -1,5 +1,6 @@
 const std = @import("std");
 const system_protocol = @import("protocols/system.zig");
+const systems_internal_api = @import("../modules/systems/internal_api.zig");
 const systems_module = @import("../modules/systems/module.zig");
 
 const Box = @import("../utils/box.zig").Box;
@@ -32,6 +33,10 @@ pub const World = struct {
 
         runSystem(allocator, self, setup_function);
     }
+
+    pub fn runSystems(self: *World, allocator: std.mem.Allocator) void {
+        systems_internal_api.runGroupedSystems(allocator, self);
+    }
 };
 
 test "deinit: calls the box's deinit" {
@@ -49,4 +54,47 @@ test "deinit: calls the box's deinit" {
         ResourceId.fromType(Type),
         Box.fromOwnedPointer(resource),
     );
+}
+
+test "runSystems: runs all registered systems in all groups" {
+    const Systems = @import("../modules/systems/module.zig").Systems;
+
+    const TestState = struct {
+        var system_one_calls: u32 = 0;
+        var system_two_calls: u32 = 0;
+    };
+
+    const setup_one = struct {
+        pub fn setupFunction(allocator: std.mem.Allocator, systems: Systems) void {
+            systems.addGroup(allocator, "group_1");
+            systems.add(allocator, "group_1", system_one);
+        }
+
+        pub fn system_one() void {
+            TestState.system_one_calls += 1;
+        }
+    }.setupFunction;
+
+    const setup_two = struct {
+        pub fn setupFunction(allocator: std.mem.Allocator, systems: Systems) void {
+            systems.addGroup(allocator, "group_2");
+            systems.add(allocator, "group_2", system_two);
+        }
+
+        pub fn system_two() void {
+            TestState.system_two_calls += 1;
+        }
+    }.setupFunction;
+
+    const allocator = std.testing.allocator;
+
+    var world = World.init(allocator);
+    defer world.deinit(allocator);
+
+    world.addModule(allocator, setup_one);
+    world.addModule(allocator, setup_two);
+    world.runSystems(allocator);
+
+    try std.testing.expectEqual(1, TestState.system_one_calls);
+    try std.testing.expectEqual(1, TestState.system_two_calls);
 }

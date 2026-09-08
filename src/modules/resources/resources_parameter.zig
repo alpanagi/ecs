@@ -17,7 +17,7 @@ pub const Resources = struct {
         };
     }
 
-    pub fn addOwned(self: *const Resources, allocator: std.mem.Allocator, resource: anytype) void {
+    pub fn addOwned(self: Resources, allocator: std.mem.Allocator, resource: anytype) void {
         const PointerType = @TypeOf(resource);
 
         if (comptime !mutable_pointer_protocol.validate(PointerType)) @compileError(
