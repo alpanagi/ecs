@@ -3,7 +3,7 @@ const system_protocol = @import("protocols/system.zig");
 const systems_module = @import("../modules/systems/module.zig");
 
 const Box = @import("../utils/box.zig").Box;
-const ResourceId = @import("../modules/resources/resource_id.zig").ResourceId;
+const ResourceId = @import("../modules/resources/module.zig").ResourceId;
 
 const runSystem = @import("run_system.zig").runSystem;
 
