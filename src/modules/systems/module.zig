@@ -8,9 +8,9 @@ pub const Systems = @import("parameter.zig").Systems;
 pub fn setup(allocator: std.mem.Allocator, resources: Resources) void {
     var state = SystemsState{};
 
-    state.addGroup(allocator, "pre-update");
-    state.addGroup(allocator, "update");
-    state.addGroup(allocator, "post-update");
+    state.addGroup(allocator, "pre-update", .last);
+    state.addGroup(allocator, "update", .last);
+    state.addGroup(allocator, "post-update", .last);
 
     resources.addOwned(allocator, &state);
 }

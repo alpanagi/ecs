@@ -66,7 +66,7 @@ test "runSystems: runs all registered systems in all groups" {
 
     const setup_one = struct {
         pub fn setupFunction(allocator: std.mem.Allocator, systems: Systems) void {
-            systems.addGroup(allocator, "group_1");
+            systems.addGroup(allocator, "group_1", .last);
             systems.add(allocator, "group_1", system_one);
         }
 
@@ -77,7 +77,7 @@ test "runSystems: runs all registered systems in all groups" {
 
     const setup_two = struct {
         pub fn setupFunction(allocator: std.mem.Allocator, systems: Systems) void {
-            systems.addGroup(allocator, "group_2");
+            systems.addGroup(allocator, "group_2", .last);
             systems.add(allocator, "group_2", system_two);
         }
 
