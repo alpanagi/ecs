@@ -1,11 +1,10 @@
 const std = @import("std");
-const system_protocol = @import("../../core/protocols/system.zig");
 
-const World = @import("../../core/world.zig").World;
+const Thunk = @import("../../core/run_system.zig").Thunk;
 
 const panic = @import("../../utils/panic.zig").panic;
 const panicOom = @import("../../utils/panic.zig").panicOom;
-const runSystem = @import("../../core/run_system.zig").runSystem;
+const createSystemThunk = @import("../../core/run_system.zig").createSystemThunk;
 
 pub const SystemsState = struct {
     groups: std.ArrayList(Group) = .empty,
@@ -65,22 +64,12 @@ pub const SystemsState = struct {
         group_name: []const u8,
         system: anytype,
     ) void {
-        const SystemType = @TypeOf(system);
-
-        if (comptime !system_protocol.validate(SystemType))
-            @compileError("Does not implement System protocol: " ++ @typeName(SystemType));
-
         const group = for (self.groups.items) |*group| {
             if (std.mem.eql(u8, group_name, group.name)) break group;
         } else panic("Tried to add system to unknown group: {s}", .{group_name});
 
-        const thunk = struct {
-            pub fn function(inner_allocator: std.mem.Allocator, world: *World) void {
-                runSystem(inner_allocator, world, system);
-            }
-        }.function;
-
-        group.systems.append(allocator, &thunk) catch panicOom(@This(), @src());
+        const thunk = createSystemThunk(system);
+        group.systems.append(allocator, thunk) catch panicOom(@This(), @src());
     }
 };
 
@@ -95,9 +84,9 @@ pub const GroupPosition = union(enum) {
     after: []const u8,
 };
 
-const Thunk = *const fn (std.mem.Allocator, *World) void;
-
 test "deinit: deallocates groups" {
+    const World = @import("../../core/world.zig").World;
+
     const allocator = std.testing.allocator;
 
     const thunk = struct {
@@ -167,31 +156,4 @@ test "add: appends system to the correct group" {
 
     try std.testing.expectEqual(0, state.groups.items[0].systems.items.len);
     try std.testing.expectEqual(1, state.groups.items[1].systems.items.len);
-}
-
-test "add: creates a thunk that calls the passed system" {
-    const allocator = std.testing.allocator;
-
-    var world = World.init(allocator);
-    defer world.deinit(allocator);
-
-    const TestState = struct {
-        var system_calls: u32 = 0;
-    };
-
-    const system = struct {
-        pub fn function(_: std.mem.Allocator) void {
-            TestState.system_calls += 1;
-        }
-    }.function;
-
-    var state = SystemsState{};
-    defer state.deinit(allocator);
-
-    state.addGroup(allocator, "group", .last);
-    state.add(allocator, "group", system);
-
-    state.groups.items[0].systems.items[0](allocator, &world);
-
-    try std.testing.expectEqual(1, TestState.system_calls);
 }

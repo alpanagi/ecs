@@ -1,4 +1,5 @@
 const std = @import("std");
+const one_shots_module = @import("../modules/one_shots/module.zig");
 const system_protocol = @import("protocols/system.zig");
 const systems_internal_api = @import("../modules/systems/internal_api.zig");
 const systems_module = @import("../modules/systems/module.zig");
@@ -15,6 +16,7 @@ pub const World = struct {
         var world = World{};
 
         world.addModule(allocator, systems_module.setup);
+        world.addModule(allocator, one_shots_module.setup);
 
         return world;
     }

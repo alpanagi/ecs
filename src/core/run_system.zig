@@ -1,4 +1,5 @@
 const std = @import("std");
+const system_protocol = @import("protocols/system.zig");
 
 const World = @import("world.zig").World;
 
@@ -18,6 +19,21 @@ pub fn runSystem(allocator: std.mem.Allocator, world: *World, system: anytype) v
 
     @call(.auto, system, arguments);
 }
+
+pub fn createSystemThunk(system: anytype) Thunk {
+    const SystemType = @TypeOf(system);
+
+    if (comptime !system_protocol.validate(SystemType))
+        @compileError("Does not implement System protocol: " ++ @typeName(SystemType));
+
+    return struct {
+        pub fn function(allocator: std.mem.Allocator, world: *World) void {
+            runSystem(allocator, world, system);
+        }
+    }.function;
+}
+
+pub const Thunk = *const fn (std.mem.Allocator, *World) void;
 
 test "runSystem: runs valid system with initialized parameters" {
     const TestState = struct {
@@ -49,5 +65,27 @@ test "runSystem: runs valid system with initialized parameters" {
     runSystem(allocator, &world, system);
 
     try std.testing.expectEqual(1, TestState.parameter_from_world_calls);
+    try std.testing.expectEqual(1, TestState.system_calls);
+}
+
+test "createSystemThunk: creates a thunk that calls the passed system" {
+    const allocator = std.testing.allocator;
+
+    const TestState = struct {
+        var system_calls: u32 = 0;
+    };
+
+    const system = struct {
+        pub fn function() void {
+            TestState.system_calls += 1;
+        }
+    }.function;
+
+    var world = World.init(allocator);
+    defer world.deinit(allocator);
+
+    const thunk = createSystemThunk(system);
+    thunk(allocator, &world);
+
     try std.testing.expectEqual(1, TestState.system_calls);
 }
