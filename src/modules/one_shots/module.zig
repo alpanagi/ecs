@@ -1,11 +1,10 @@
 const std = @import("std");
 
-const InternalOneShots = @import("internal_parameter.zig").InternalOneShots;
 const OneShotsState = @import("state.zig").OneShotsState;
 const Resources = @import("../resources/module.zig").Resources;
 const Systems = @import("../systems/module.zig").Systems;
 
-pub const OneShots = @import("one_shots_parameter.zig").OneShots;
+pub const OneShots = @import("parameter.zig").OneShots;
 
 pub fn setup(allocator: std.mem.Allocator, resources: Resources, systems: Systems) void {
     var state = OneShotsState{};
@@ -15,12 +14,12 @@ pub fn setup(allocator: std.mem.Allocator, resources: Resources, systems: System
     systems.add(allocator, "one-shots", runOneShots);
 }
 
-fn runOneShots(allocator: std.mem.Allocator, internal_one_shots: InternalOneShots) void {
-    var pending_systems = internal_one_shots.state.pending_systems;
-    internal_one_shots.state.pending_systems = .empty;
+fn runOneShots(allocator: std.mem.Allocator, one_shots: OneShots) void {
+    var pending_systems = one_shots.state.pending_systems;
+    one_shots.state.pending_systems = .empty;
 
     for (pending_systems.items) |thunk| {
-        thunk(allocator, internal_one_shots.world);
+        thunk(allocator, one_shots.world);
     }
 
     pending_systems.deinit(allocator);

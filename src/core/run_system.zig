@@ -23,7 +23,7 @@ pub fn runSystem(allocator: std.mem.Allocator, world: *World, system: anytype) v
 pub fn createSystemThunk(system: anytype) Thunk {
     const SystemType = @TypeOf(system);
 
-    if (comptime !system_protocol.validate(SystemType))
+    if (comptime !system_protocol.validate(SystemType, .{}))
         @compileError("Does not implement System protocol: " ++ @typeName(SystemType));
 
     return struct {

@@ -4,12 +4,16 @@ const Resource = @import("../resources/module.zig").Resource;
 const OneShotsState = @import("state.zig").OneShotsState;
 const World = @import("../../core/world.zig").World;
 
-pub const InternalOneShots = struct {
+pub const OneShots = struct {
     state: *OneShotsState,
     world: *World,
 
-    pub fn fromWorld(allocator: std.mem.Allocator, world: *World) InternalOneShots {
+    pub fn fromWorld(allocator: std.mem.Allocator, world: *World) OneShots {
         const resource = Resource(OneShotsState).fromWorld(allocator, world).value;
-        return InternalOneShots{ .state = resource, .world = world };
+        return OneShots{ .state = resource, .world = world };
+    }
+
+    pub fn add(self: OneShots, allocator: std.mem.Allocator, system: anytype) void {
+        self.state.add(allocator, system);
     }
 };
