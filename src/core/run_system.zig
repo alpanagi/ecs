@@ -1,6 +1,9 @@
 const std = @import("std");
-const system_protocol = @import("protocols/system.zig");
+const ecs_function_protocol = @import("protocols/ecs_function.zig");
 
+const Observers = @import("../modules/observers/module.zig").Observers;
+const Resources = @import("../modules/resources/module.zig").Resources;
+const Systems = @import("../modules/systems/module.zig").Systems;
 const World = @import("world.zig").World;
 
 pub fn runSystem(allocator: std.mem.Allocator, world: *World, system: anytype) void {
@@ -23,7 +26,9 @@ pub fn runSystem(allocator: std.mem.Allocator, world: *World, system: anytype) v
 pub fn createSystemThunk(system: anytype) Thunk {
     const SystemType = @TypeOf(system);
 
-    if (comptime !system_protocol.validate(SystemType, .{}))
+    if (comptime !ecs_function_protocol.validate(SystemType, .{
+        .reject = &.{ Observers, Resources, Systems },
+    }))
         @compileError("Does not implement System protocol: " ++ @typeName(SystemType));
 
     return struct {

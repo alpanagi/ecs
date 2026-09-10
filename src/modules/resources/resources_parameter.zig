@@ -41,6 +41,12 @@ pub const Resources = struct {
 
         resource.* = undefined;
     }
+
+    pub fn get(self: Resources, Type: type) ?*Type {
+        const resource_id = ResourceId.fromType(Type);
+        const box = self.resources.getPtr(resource_id) orelse return null;
+        return @ptrCast(@alignCast(box.value));
+    }
 };
 
 test "addOwned: adds resource to resources" {
@@ -61,4 +67,36 @@ test "addOwned: adds resource to resources" {
 
     const expected = Type{ .data = 11 };
     try std.testing.expectEqual(expected, saved_resource.*);
+}
+
+test "get: returns existing resource" {
+    const allocator = std.testing.allocator;
+
+    var world = World.init(allocator);
+    defer world.deinit(allocator);
+
+    const parameter = Resources.fromWorld(allocator, &world);
+
+    const Type = struct { data: u32 };
+    var resource: Type = .{ .data = 12 };
+
+    parameter.addOwned(allocator, &resource);
+    const saved_resource = parameter.get(Type);
+
+    try std.testing.expectEqual(Type{ .data = 12 }, saved_resource.?.*);
+}
+
+test "get: returns null for unknown resource" {
+    const allocator = std.testing.allocator;
+
+    var world = World.init(allocator);
+    defer world.deinit(allocator);
+
+    const parameter = Resources.fromWorld(allocator, &world);
+
+    const Type = struct { data: u32 };
+
+    const saved_resource = parameter.get(Type);
+
+    try std.testing.expectEqual(null, saved_resource);
 }

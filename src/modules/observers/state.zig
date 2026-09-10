@@ -1,8 +1,11 @@
 const std = @import("std");
-const system_protocol = @import("../../core/protocols/system.zig");
+const ecs_function_protocol = @import("../../core/protocols/ecs_function.zig");
 
 const Event = @import("event_parameter.zig").Event;
 const EventId = @import("event_id.zig").EventId;
+const Observers = @import("observers_parameter.zig").Observers;
+const Resources = @import("../resources/module.zig").Resources;
+const Systems = @import("../systems/module.zig").Systems;
 const World = @import("../../core/world.zig").World;
 
 const panicOom = @import("../../utils/panic.zig").panicOom;
@@ -53,8 +56,11 @@ const ObserverThunk = *const fn (std.mem.Allocator, *World, *const anyopaque) vo
 fn createObserverThunk(EventType: type, system: anytype) ObserverThunk {
     const SystemType = @TypeOf(system);
 
-    if (comptime !system_protocol.validate(SystemType, .{ .ignore = &.{Event(EventType)} }))
-        @compileError("Does not implement System protocol: " ++ @typeName(SystemType));
+    if (comptime !ecs_function_protocol.validate(SystemType, .{
+        .ignore = &.{Event(EventType)},
+        .reject = &.{ Observers, Resources, Systems },
+    }))
+        @compileError("Does not implement Observer protocol: " ++ @typeName(SystemType));
 
     return struct {
         pub fn function(allocator: std.mem.Allocator, world: *World, event: *const anyopaque) void {

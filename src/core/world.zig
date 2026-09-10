@@ -1,7 +1,7 @@
 const std = @import("std");
+const ecs_function_protocol = @import("protocols/ecs_function.zig");
 const observers_module = @import("../modules/observers/module.zig");
 const one_shots_module = @import("../modules/one_shots/module.zig");
-const system_protocol = @import("protocols/system.zig");
 const systems_internal_api = @import("../modules/systems/internal_api.zig");
 const systems_module = @import("../modules/systems/module.zig");
 
@@ -32,8 +32,9 @@ pub const World = struct {
     pub fn addModule(self: *World, allocator: std.mem.Allocator, setup_function: anytype) void {
         const SetupFunctionType = @TypeOf(setup_function);
 
-        if (comptime !system_protocol.validate(SetupFunctionType, .{}))
-            @compileError("Does not implement System protocol: " ++ @typeName(SetupFunctionType));
+        if (comptime !ecs_function_protocol.validate(SetupFunctionType, .{}))
+            @compileError("Does not implement SetupFunction protocol: " ++
+                @typeName(SetupFunctionType));
 
         runSystem(allocator, self, setup_function);
     }
