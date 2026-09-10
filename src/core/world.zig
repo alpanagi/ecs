@@ -32,7 +32,10 @@ pub const World = struct {
     pub fn addModule(self: *World, allocator: std.mem.Allocator, setup_function: anytype) void {
         const SetupFunctionType = @TypeOf(setup_function);
 
-        if (comptime !ecs_function_protocol.validate(SetupFunctionType, .{}))
+        if (comptime !ecs_function_protocol.validate(
+            SetupFunctionType,
+            .{ .reject = &.{observers_module.Events} },
+        ))
             @compileError("Does not implement SetupFunction protocol: " ++
                 @typeName(SetupFunctionType));
 
