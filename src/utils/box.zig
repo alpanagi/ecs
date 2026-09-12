@@ -2,9 +2,11 @@ const std = @import("std");
 const deinit_protocol = @import("protocols/deinit.zig");
 const mutable_pointer_protocol = @import("protocols/mutable_pointer.zig");
 
+const DeinitFunction = @import("deinit_function.zig").DeinitFunction;
+
 pub const Box = struct {
     value: *anyopaque,
-    deinit_function: *const DeinitFunction,
+    deinit_function: DeinitFunction,
 
     pub fn fromOwnedPointer(pointer: anytype) Box {
         const PointerType = @TypeOf(pointer);
@@ -12,7 +14,7 @@ pub const Box = struct {
             @compileError("Does not implement MutablePointer protocol: " ++ @typeName(PointerType));
 
         const ValueType = @typeInfo(PointerType).pointer.child;
-        const deinit_function: *const DeinitFunction = struct {
+        const deinit_function: DeinitFunction = struct {
             pub fn function(value: *anyopaque, allocator: std.mem.Allocator) void {
                 const typed_value: PointerType = @ptrCast(@alignCast(value));
                 if (comptime deinit_protocol.validate(ValueType)) typed_value.deinit(allocator);
@@ -31,8 +33,6 @@ pub const Box = struct {
         self.* = undefined;
     }
 };
-
-const DeinitFunction = fn (*anyopaque, std.mem.Allocator) void;
 
 test "deinit: calls deinit of inner type on deinit" {
     const allocator = std.testing.allocator;
