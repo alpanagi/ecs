@@ -1,6 +1,7 @@
 pub const World = @import("core/world.zig").World;
 
 pub const parameters = struct {
+    pub const Entities = @import("modules/storage/module.zig").Entities;
     pub const Event = @import("modules/observers/module.zig").Event;
     pub const Events = @import("modules/observers/module.zig").Events;
     pub const Observers = @import("modules/observers/module.zig").Observers;
