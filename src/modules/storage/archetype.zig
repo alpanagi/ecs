@@ -10,6 +10,7 @@ var marker_pointer_data: u8 align(64) = 0;
 
 pub const Archetype = struct {
     components: []Component,
+    entity_count: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, comptime component_types: []const type) Archetype {
         const components = allocator.alloc(Component, component_types.len) catch
@@ -49,7 +50,7 @@ pub const Archetype = struct {
         self: *Archetype,
         allocator: std.mem.Allocator,
         component_values: anytype,
-    ) void {
+    ) usize {
         const error_message = "You should pass a pointer to a tuple of component values to addOwned";
 
         const components_info = @typeInfo(@TypeOf(component_values));
@@ -65,13 +66,22 @@ pub const Archetype = struct {
 
             inline for (component_values) |component_value| {
                 if (component.id() == ComponentId.fromType(@TypeOf(component_value))) {
-                    component.sized.data.appendSlice(allocator, std.mem.asBytes(&component_value)) catch
+                    component.sized.data.insertSlice(
+                        allocator,
+                        self.entity_count * component.sized.size,
+                        std.mem.asBytes(&component_value),
+                    ) catch
                         panicOom(@This(), @src());
 
                     continue :components;
                 }
             }
+
+            panic("Missing value for component: 0x{x}", .{@intFromEnum(component.id())});
         }
+
+        defer self.entity_count += 1;
+        return self.entity_count;
     }
 
     pub fn getComponents(
@@ -148,7 +158,7 @@ test "deinit: calls the component deinit, if it exists" {
     const allocator = std.testing.allocator;
     var archetype = Archetype.init(allocator, &.{ ComponentOne, ComponentTwo });
 
-    archetype.addOwned(allocator, &.{
+    _ = archetype.addOwned(allocator, &.{
         ComponentOne{ .data = 11 },
         ComponentTwo{ .data = 12 },
     });
@@ -167,12 +177,12 @@ test "addOwned: copies the data to the archetype respecting component size" {
     var archetype = Archetype.init(allocator, &.{ ComponentOne, ComponentTwo });
     defer archetype.deinit(allocator);
 
-    archetype.addOwned(allocator, &.{
+    _ = archetype.addOwned(allocator, &.{
         ComponentOne{ .data = 13 },
         ComponentTwo{ .data = 14 },
     });
 
-    archetype.addOwned(allocator, &.{
+    _ = archetype.addOwned(allocator, &.{
         ComponentOne{ .data = 15 },
         ComponentTwo{ .data = 16 },
     });
@@ -195,12 +205,12 @@ test "addOwned: copies data correctly no matter the order passed" {
     var archetype = Archetype.init(allocator, &.{ ComponentOne, ComponentTwo });
     defer archetype.deinit(allocator);
 
-    archetype.addOwned(allocator, &.{
+    _ = archetype.addOwned(allocator, &.{
         ComponentTwo{ .data = 18 },
         ComponentOne{ .data = 17 },
     });
 
-    archetype.addOwned(allocator, &.{
+    _ = archetype.addOwned(allocator, &.{
         ComponentOne{ .data = 19 },
         ComponentTwo{ .data = 20 },
     });
@@ -212,4 +222,27 @@ test "addOwned: copies data correctly no matter the order passed" {
     data = archetype.getComponents(1, &.{ ComponentOne, ComponentTwo });
     try std.testing.expectEqual(19, data[0].data);
     try std.testing.expectEqual(20, data[1].data);
+}
+
+test "addOwned: returns the entity index" {
+    const ComponentOne = struct { data: u32 };
+    const ComponentTwo = struct { data: u8 };
+
+    const allocator = std.testing.allocator;
+
+    var archetype = Archetype.init(allocator, &.{ ComponentOne, ComponentTwo });
+    defer archetype.deinit(allocator);
+
+    const index_one = archetype.addOwned(allocator, &.{
+        ComponentOne{ .data = 13 },
+        ComponentTwo{ .data = 14 },
+    });
+
+    const index_two = archetype.addOwned(allocator, &.{
+        ComponentOne{ .data = 15 },
+        ComponentTwo{ .data = 16 },
+    });
+
+    try std.testing.expectEqual(0, index_one);
+    try std.testing.expectEqual(1, index_two);
 }
