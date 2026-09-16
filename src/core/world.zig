@@ -2,6 +2,7 @@ const std = @import("std");
 const ecs_function_protocol = @import("protocols/ecs_function.zig");
 const observers_module = @import("../modules/observers/module.zig");
 const one_shots_module = @import("../modules/one_shots/module.zig");
+const storage_module = @import("../modules/storage/module.zig");
 const systems_internal_api = @import("../modules/systems/internal_api.zig");
 const systems_module = @import("../modules/systems/module.zig");
 
@@ -19,6 +20,7 @@ pub const World = struct {
         world.addModule(allocator, systems_module.setup);
         world.addModule(allocator, one_shots_module.setup);
         world.addModule(allocator, observers_module.setup);
+        world.addModule(allocator, storage_module.setup);
 
         return world;
     }
